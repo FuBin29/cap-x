@@ -256,8 +256,13 @@ def main(
 
     logger.info("Loading SAM3 model...")
     try:
+        local_ckpt_path = "/home/fubin/ckpt/sam3/sam3.pt"
+        
         # Assuming build_sam3_image_model loads default checkpoint
-        _MODEL = build_sam3_image_model(enable_inst_interactivity=True)
+        _MODEL = build_sam3_image_model(
+            checkpoint_path=local_ckpt_path,
+            enable_inst_interactivity=True
+        )
     except Exception as e:
         logger.error(f"Error building SAM3 model: {e}")
         raise

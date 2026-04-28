@@ -54,6 +54,8 @@ dependencies = [
   "opencv-python-headless",
   "pillow>=10",
   "cloudpickle",
+  "robosuite-models>=1.0.0",
+  "mink>=1.1.0",
 ]
 
 [project.optional-dependencies]

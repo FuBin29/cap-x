@@ -20,10 +20,11 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import tyro
 import yaml
@@ -38,6 +39,10 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("launch_servers")
+
+OwlvitModelFamily = Literal["auto", "owlv2", "owlvit"]
+
+DEFAULT_OWLVIT_MODEL_PATH = "/home/fubin/ckpt/owlv2/owlv2-large-patch14-ensemble"
 
 # ---------------------------------------------------------------------------
 # Server Registry
@@ -329,8 +334,14 @@ def _build_cmd(server_config: dict[str, Any], workers: int) -> list[str]:
         merged_extra.setdefault("device", "cuda")
 
     for k, v in merged_extra.items():
+        if v is None:
+            continue
         # Convert Python values to CLI-style args: --key value
         arg_name = f"--{k.replace('_', '-')}"
+        if isinstance(v, bool):
+            if v:
+                cmd.append(arg_name)
+            continue
         cmd.extend([arg_name, str(v)])
 
     return cmd
@@ -384,11 +395,37 @@ def start_server(
         stdout=stdout_target,
         stderr=stderr_target,
         text=True,
+        bufsize=1,
     )
+
+    if log_dir is None and proc.stdout is not None:
+        thread = threading.Thread(
+            target=_forward_process_output,
+            args=(name, proc.stdout),
+            daemon=True,
+        )
+        thread.start()
+        proc._log_thread = thread  # type: ignore[attr-defined]
 
     # Attach log file handle so we can close it on shutdown
     proc._log_file_handle = log_file_handle  # type: ignore[attr-defined]
     return proc
+
+
+def _forward_process_output(name: str, stream: Any) -> None:
+    """Drain child process output so verbose model loading cannot block startup."""
+    try:
+        for line in stream:
+            line = line.rstrip()
+            if line:
+                logger.info("  [%s] %s", name, line)
+    except Exception as exc:
+        logger.debug("Stopped forwarding %s output: %s", name, exc)
+    finally:
+        try:
+            stream.close()
+        except Exception:
+            pass
 
 
 def wait_for_ready(
@@ -550,6 +587,27 @@ class LaunchServersArgs:
     dry_run: bool = False
     """Print the allocation plan and exit without starting servers."""
 
+    owlvit_model_name: str | None = None
+    """Override OWL-ViT/OWLv2 model name or local checkpoint directory."""
+
+    owlvit_model_family: OwlvitModelFamily = "auto"
+    """OWL detector family for local checkpoints: auto, owlv2, or owlvit."""
+
+    owlvit_local_files_only: bool = False
+    """Start OWL-ViT/OWLv2 from local files only, without downloading."""
+
+    sam2_checkpoint_path: str | None = "/home/fubin/ckpt/sam2/sam2.1_hiera_large.pt"
+    """Local SAM2 checkpoint path. Set to None to use HuggingFace loading."""
+
+    sam2_model_cfg: str = "configs/sam2.1/sam2.1_hiera_l.yaml"
+    """SAM2 config name/path passed to the official sam2 builder."""
+
+    sam2_model_name: str | None = None
+    """Override HuggingFace SAM2 model name when sam2_checkpoint_path is None."""
+
+    sam2_points_per_batch: int | None = None
+    """Override SAM2 automatic mask generator points_per_batch."""
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -585,6 +643,30 @@ def _resolve_servers(args: LaunchServersArgs) -> list[dict[str, Any]]:
     # Apply default host if not set
     for srv in servers:
         srv.setdefault("host", args.host)
+        if srv["server"] == "owlvit":
+            extra = dict(srv.get("extra_args", {}))
+            if args.owlvit_model_name is not None:
+                extra["model_name"] = args.owlvit_model_name
+            elif Path(DEFAULT_OWLVIT_MODEL_PATH).exists():
+                extra["model_name"] = DEFAULT_OWLVIT_MODEL_PATH
+                extra["local_files_only"] = True
+            if args.owlvit_model_family != "auto" or args.owlvit_model_name is not None:
+                extra["model_family"] = args.owlvit_model_family
+            if args.owlvit_local_files_only:
+                extra["local_files_only"] = True
+            if extra:
+                srv["extra_args"] = extra
+        elif srv["server"] == "sam2":
+            extra = dict(srv.get("extra_args", {}))
+            if args.sam2_checkpoint_path is not None:
+                extra["checkpoint_path"] = args.sam2_checkpoint_path
+                extra["model_cfg"] = args.sam2_model_cfg
+            if args.sam2_model_name is not None:
+                extra["model_name"] = args.sam2_model_name
+            if args.sam2_points_per_batch is not None:
+                extra["points_per_batch"] = args.sam2_points_per_batch
+            if extra:
+                srv["extra_args"] = extra
 
     return servers
 

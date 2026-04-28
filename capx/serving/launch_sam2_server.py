@@ -23,6 +23,8 @@ app = FastAPI()
 _GENERATOR: Any | None = None
 _PROCESSOR: Any | None = None
 _MODEL: Any | None = None
+_LOCAL_PREDICTOR: Any | None = None
+_USING_LOCAL_SAM2: bool = False
 _POINTS_PER_BATCH: int = 64
 _DEVICE: str = "cuda"
 
@@ -101,7 +103,11 @@ def _extract_masks_from_payload(
 
         if isinstance(entry, dict):
             mask_like = entry.get("mask") or entry.get("segmentation")
-            score = entry.get("score")
+            score = (
+                entry.get("score")
+                or entry.get("predicted_iou")
+                or entry.get("stability_score")
+            )
             if score is None and idx < len(scores_list):
                 score = scores_list[idx]
         else:
@@ -226,6 +232,62 @@ def encode_array(arr: np.ndarray) -> str:
     return base64.b64encode(arr.tobytes()).decode("utf-8")
 
 
+def _run_local_box_prompt(
+    pil_image: Image.Image, box: Sequence[float], max_masks: int | None
+) -> list[dict[str, Any]]:
+    if _LOCAL_PREDICTOR is None:
+        raise HTTPException(status_code=503, detail="Local SAM2 predictor unavailable.")
+
+    rgb = np.asarray(pil_image)
+    box_arr = np.asarray(box, dtype=np.float32)
+
+    _LOCAL_PREDICTOR.set_image(rgb)
+    masks, scores, _ = _LOCAL_PREDICTOR.predict(box=box_arr, multimask_output=True)
+
+    parsed = []
+    for idx, mask in enumerate(_ensure_iterable(masks)):
+        score = float(scores[idx]) if idx < len(scores) else 0.0
+        parsed.append({"mask": np.asarray(mask).astype(bool), "score": score})
+
+    parsed.sort(key=lambda item: float(item["score"]), reverse=True)
+    if max_masks is not None:
+        parsed = parsed[:max_masks]
+    return parsed
+
+
+def _run_local_full_segmentation(
+    pil_image: Image.Image, max_masks: int | None
+) -> list[dict[str, Any]]:
+    if _GENERATOR is None:
+        raise HTTPException(status_code=503, detail="Local SAM2 mask generator unavailable.")
+
+    outputs = _GENERATOR.generate(np.asarray(pil_image))
+    return _extract_masks_from_payload({"masks": outputs}, max_masks)
+
+
+def _run_local_point_prompt(
+    pil_image: Image.Image, point: tuple[float, float]
+) -> tuple[np.ndarray, np.ndarray]:
+    if _LOCAL_PREDICTOR is None:
+        raise HTTPException(status_code=503, detail="Local SAM2 predictor unavailable.")
+
+    rgb = np.asarray(pil_image)
+    point_coords = np.asarray([point], dtype=np.float32)
+    point_labels = np.ones((1,), dtype=np.int32)
+
+    _LOCAL_PREDICTOR.set_image(rgb)
+    masks, scores, _ = _LOCAL_PREDICTOR.predict(
+        point_coords=point_coords,
+        point_labels=point_labels,
+        multimask_output=True,
+    )
+
+    scores_arr = np.asarray(scores)
+    masks_arr = np.asarray(masks)
+    mask_sort_idxs = np.argsort(scores_arr)[::-1]
+    return scores_arr[mask_sort_idxs], masks_arr[mask_sort_idxs]
+
+
 @app.post("/segment", response_model=SegmentResponse)
 async def segment(req: SegmentRequest):
     if _GENERATOR is None:
@@ -234,7 +296,13 @@ async def segment(req: SegmentRequest):
     pil_image = decode_image(req.image_base64)
     height, width = pil_image.size[1], pil_image.size[0]
 
-    if req.box is not None:
+    if _USING_LOCAL_SAM2:
+        if req.box is not None:
+            result_masks = _run_local_box_prompt(pil_image, req.box, req.max_masks)
+        else:
+            result_masks = _run_local_full_segmentation(pil_image, req.max_masks)
+
+    elif req.box is not None:
         # Box Prompt Logic
         if _PROCESSOR is None or _MODEL is None:
             raise HTTPException(
@@ -343,6 +411,17 @@ async def segment(req: SegmentRequest):
 
 @app.post("/segment_point", response_model=PointPromptResponse)
 async def segment_point(req: PointPromptRequest):
+    if _USING_LOCAL_SAM2:
+        pil_image = decode_image(req.image_base64)
+        scores, masks = _run_local_point_prompt(pil_image, req.point_coords)
+
+        return PointPromptResponse(
+            scores=scores.tolist(),
+            masks_base64=encode_array(masks),
+            masks_shape=masks.shape,
+            masks_dtype=str(masks.dtype),
+        )
+
     if _PROCESSOR is None or _MODEL is None:
         raise HTTPException(status_code=503, detail="SAM2 processor/model unavailable")
 
@@ -372,34 +451,85 @@ async def segment_point(req: PointPromptRequest):
     )
 
 
+def _load_local_sam2(
+    checkpoint_path: str,
+    model_cfg: str,
+    device: str,
+    points_per_batch: int,
+) -> None:
+    global _GENERATOR, _PROCESSOR, _MODEL, _LOCAL_PREDICTOR, _USING_LOCAL_SAM2
+
+    if device.startswith("cuda"):
+        device_idx = int(device.split(":")[-1]) if ":" in device else 0
+        torch.cuda.set_device(device_idx)
+
+    try:
+        from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+        from sam2.build_sam import build_sam2
+        from sam2.sam2_image_predictor import SAM2ImagePredictor
+    except ImportError as exc:
+        raise RuntimeError(
+            "Local SAM2 checkpoint loading requires the official `sam2` package. "
+            "Install it, then rerun with checkpoint_path set."
+        ) from exc
+
+    logger.info(
+        "Loading local SAM2 checkpoint %s with cfg %s on %s...",
+        checkpoint_path,
+        model_cfg,
+        device,
+    )
+    model = build_sam2(model_cfg, checkpoint_path, device=device)
+    if hasattr(model, "eval"):
+        model.eval()
+
+    _MODEL = model
+    _PROCESSOR = None
+    _LOCAL_PREDICTOR = SAM2ImagePredictor(model)
+    _GENERATOR = SAM2AutomaticMaskGenerator(model, points_per_batch=points_per_batch)
+    _USING_LOCAL_SAM2 = True
+
+
+def _load_hf_sam2(model_name: str, device: str) -> None:
+    global _GENERATOR, _PROCESSOR, _MODEL, _LOCAL_PREDICTOR, _USING_LOCAL_SAM2
+
+    logger.info("Loading SAM2 model: %s on %s...", model_name, device)
+
+    _GENERATOR = pipeline("mask-generation", model=model_name, device=device)
+    _PROCESSOR = Sam2Processor.from_pretrained(model_name)
+    _MODEL = getattr(_GENERATOR, "model", None)
+
+    if _MODEL is None:
+        _MODEL = Sam2Model.from_pretrained(model_name).to(device)
+    elif hasattr(_MODEL, "to"):
+        _MODEL = _MODEL.to(device)
+
+    _LOCAL_PREDICTOR = None
+    _USING_LOCAL_SAM2 = False
+
+
 def main(
     model_name: str = "facebook/sam2.1-hiera-large",
+    checkpoint_path: str | None = "/home/fubin/ckpt/sam2/sam2.1_hiera_large.pt",
+    model_cfg: str = "configs/sam2.1/sam2.1_hiera_l.yaml",
     device: str = "cuda",
+    points_per_batch: int = 64,
     port: int = 8113,
     host: str = "127.0.0.1",
 ):
-    global _GENERATOR, _PROCESSOR, _MODEL, _POINTS_PER_BATCH, _DEVICE
+    global _POINTS_PER_BATCH, _DEVICE
 
     _DEVICE = device
+    _POINTS_PER_BATCH = points_per_batch
     if device.startswith("cuda") and ":" not in device:
         device_arg = f"{device}:0"
     else:
         device_arg = device
 
-    logger.info(f"Loading SAM2 model: {model_name} on {device_arg}...")
-
-    # Initialize Pipeline
-    _GENERATOR = pipeline("mask-generation", model=model_name, device=device_arg)
-
-    # Initialize Processor/Model for prompting
-    _PROCESSOR = Sam2Processor.from_pretrained(model_name)
-    _MODEL = getattr(_GENERATOR, "model", None)
-
-    # If pipeline didn't expose model or we need to ensure it's on right device/mode:
-    if _MODEL is None:
-        _MODEL = Sam2Model.from_pretrained(model_name).to(device_arg)
-    elif hasattr(_MODEL, "to"):
-        _MODEL = _MODEL.to(device_arg)
+    if checkpoint_path:
+        _load_local_sam2(checkpoint_path, model_cfg, device_arg, points_per_batch)
+    else:
+        _load_hf_sam2(model_name, device_arg)
 
     logger.info("Model loaded. Starting Server...")
     uvicorn.run(app, host=host, port=port)

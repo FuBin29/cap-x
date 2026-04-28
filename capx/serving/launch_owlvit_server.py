@@ -1,7 +1,9 @@
 import base64
 import io
+import json
 import logging
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 
 import numpy as np
 import torch
@@ -122,8 +124,44 @@ async def detect_endpoint(req: DetectRequest):
 # --- Entrypoint ---
 
 
+ModelFamily = Literal["auto", "owlv2", "owlvit"]
+
+
+def _infer_model_family(model_name: str, model_family: ModelFamily) -> Literal["owlv2", "owlvit"]:
+    if model_family != "auto":
+        return model_family
+
+    model_name_lower = model_name.lower()
+    if "owlv2" in model_name_lower:
+        return "owlv2"
+    if "owlvit" in model_name_lower or "owl-vit" in model_name_lower:
+        return "owlvit"
+
+    config_path = Path(model_name).expanduser() / "config.json"
+    if config_path.exists():
+        try:
+            with config_path.open("r", encoding="utf-8") as f:
+                config = json.load(f)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid model config JSON at {config_path}: {e}") from e
+
+        config_model_type = str(config.get("model_type", "")).lower()
+        architectures = " ".join(config.get("architectures", [])).lower()
+        if "owlv2" in config_model_type or "owlv2" in architectures:
+            return "owlv2"
+        if "owlvit" in config_model_type or "owlvit" in architectures:
+            return "owlvit"
+
+    raise ValueError(
+        "Could not infer model family from model_name or local config.json. "
+        "Pass --model-family owlv2 or --model-family owlvit."
+    )
+
+
 def main(
     model_name: str = "google/owlv2-large-patch14-ensemble",
+    model_family: ModelFamily = "auto",
+    local_files_only: bool = False,
     device: str = "cuda",
     port: int = 8117,
     host: str = "127.0.0.1",
@@ -136,16 +174,29 @@ def main(
 
     logger.info(f"Loading OWL-ViT model: {model_name} on {device}...")
 
-    # Determine if this is OWL-v2 or OWL-ViT based on model name
-    is_v2 = "owlv2" in model_name.lower()
+    model_kind = _infer_model_family(model_name, model_family)
+    is_v2 = model_kind == "owlv2"
+    logger.info(
+        "Resolved model family: %s%s",
+        model_kind,
+        " (local files only)" if local_files_only else "",
+    )
 
     try:
         if is_v2:
-            _PROC = Owlv2Processor.from_pretrained(model_name)
-            _MODEL = Owlv2ForObjectDetection.from_pretrained(model_name)
+            _PROC = Owlv2Processor.from_pretrained(
+                model_name, local_files_only=local_files_only
+            )
+            _MODEL = Owlv2ForObjectDetection.from_pretrained(
+                model_name, local_files_only=local_files_only
+            )
         else:
-            _PROC = OwlViTProcessor.from_pretrained(model_name)
-            _MODEL = OwlViTForObjectDetection.from_pretrained(model_name)
+            _PROC = OwlViTProcessor.from_pretrained(
+                model_name, local_files_only=local_files_only
+            )
+            _MODEL = OwlViTForObjectDetection.from_pretrained(
+                model_name, local_files_only=local_files_only
+            )
 
         _MODEL = _MODEL.to(device)
         _MODEL.eval()
