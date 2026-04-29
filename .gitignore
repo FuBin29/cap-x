@@ -9,6 +9,7 @@ venv/
 env/
 .env
 .openrouterkey
+.aigcbestkey
 .nvinferencekeys
 .capx_skills.json
 .pytest_cache/

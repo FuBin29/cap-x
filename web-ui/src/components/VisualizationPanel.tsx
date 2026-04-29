@@ -19,6 +19,8 @@ export function VisualizationPanel({ trialState }: VisualizationPanelProps) {
   const [hasEverConnected, setHasEverConnected] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const trialCanUseViser = trialState === 'running' || trialState === 'awaiting_user_input';
+  const shouldRenderViser = trialCanUseViser || hasEverConnected;
 
   const handleSaveUrl = () => {
     setViserUrl(tempUrl);
@@ -52,6 +54,10 @@ export function VisualizationPanel({ trialState }: VisualizationPanelProps) {
     let cancelled = false;
 
     async function poll() {
+      if (!shouldRenderViser) {
+        return;
+      }
+
       while (!cancelled) {
         try {
           const ctrl = new AbortController();
@@ -87,7 +93,7 @@ export function VisualizationPanel({ trialState }: VisualizationPanelProps) {
 
     poll();
     return () => { cancelled = true; };
-  }, [viserUrl]);
+  }, [viserUrl, shouldRenderViser]);
 
   const handleIframeLoad = () => {
     setConnectionStatus('connected');
@@ -217,16 +223,18 @@ export function VisualizationPanel({ trialState }: VisualizationPanelProps) {
             <span className="text-xs text-text-tertiary">Start a trial to initialize the 3D view</span>
           </div>
         )}
-        <iframe
-          ref={iframeRef}
-          key={`viser-${retryCount}`}
-          src={viserUrl}
-          title="Viser 3D Visualization"
-          className="absolute inset-0 w-full h-full border-0"
-          allow="autoplay; fullscreen"
-          onLoad={handleIframeLoad}
-          onError={handleIframeError}
-        />
+        {shouldRenderViser && (
+          <iframe
+            ref={iframeRef}
+            key={`viser-${retryCount}`}
+            src={viserUrl}
+            title="Viser 3D Visualization"
+            className="absolute inset-0 w-full h-full border-0"
+            allow="autoplay; fullscreen"
+            onLoad={handleIframeLoad}
+            onError={handleIframeError}
+          />
+        )}
       </div>
     </div>
   );

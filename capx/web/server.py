@@ -132,14 +132,14 @@ def create_app() -> FastAPI:
             class MinimalArgs:
                 config_path: str
                 server_url: str = "http://127.0.0.1:8110/chat/completions"
-                model: str = "google/gemini-3.1-pro-preview"
+                model: str = "gemini-3.1-pro-preview"
                 temperature: float = 1.0
                 max_tokens: int = 20480
                 reasoning_effort: str = "medium"
                 api_key: str | None = None
                 use_visual_feedback: bool | None = None
                 use_img_differencing: bool | None = None
-                visual_differencing_model: str | None = "google/gemini-3.1-pro-preview"
+                visual_differencing_model: str | None = "gemini-3.1-pro-preview"
                 visual_differencing_model_server_url: str | None = "http://127.0.0.1:8110/chat/completions"
                 visual_differencing_model_api_key: str | None = None
                 total_trials: int | None = None

@@ -8,7 +8,7 @@ const FALLBACK_CONFIG = 'env_configs/cube_stack/franka_robosuite_cube_stack.yaml
 
 function App() {
   const trial = useTrialState();
-  const [model, setModel] = useState('google/gemini-3.1-pro-preview');
+  const [model, setModel] = useState('gemini-3.1-pro-preview');
   const [serverUrl, setServerUrl] = useState('http://127.0.0.1:8110/chat/completions');
   const [temperature, setTemperature] = useState(1.0);
   const [awaitUserInput, setAwaitUserInput] = useState(true);
@@ -171,15 +171,16 @@ function App() {
               disabled={isRunning}
               className="appearance-none pl-3 pr-7 py-1.5 bg-surface-sunken border border-surface-border rounded-md text-xs font-display text-text-primary focus:outline-none focus:ring-1 focus:ring-accent/40 focus:border-accent/40 disabled:opacity-40 transition-all cursor-pointer"
             >
+              {/* TODO: 更新模型列表 */}
               <optgroup label="Google">
-                <option value="google/gemini-3.1-pro-preview">Gemini 3.1 Pro Preview</option>
-                <option value="google/gemini-3.1-pro">Gemini 3.1 Pro</option>
-                <option value="google/gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
+                <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro Preview</option>
+                <option value="gemini-3.1-pro">Gemini 3.1 Pro</option>
+                <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
               </optgroup>
               <optgroup label="Anthropic">
-                <option value="anthropic/claude-opus-4-5">Claude Opus 4.5</option>
-                <option value="anthropic/claude-sonnet-4">Claude Sonnet 4</option>
-                <option value="anthropic/claude-haiku-4-5">Claude Haiku 4.5</option>
+                <option value="claude-opus-4-5">Claude Opus 4.5</option>
+                <option value="claude-sonnet-4">Claude Sonnet 4</option>
+                <option value="claude-haiku-4-5">Claude Haiku 4.5</option>
               </optgroup>
               <optgroup label="OpenAI">
                 <option value="openai/gpt-5.2">GPT 5.2</option>

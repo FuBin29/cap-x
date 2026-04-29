@@ -16,7 +16,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-import requests
+from capx.utils.serve_utils import post
 
 if TYPE_CHECKING:
     from capx.envs.launch import LaunchArgs
@@ -25,23 +25,28 @@ if TYPE_CHECKING:
 # Model constants
 # ---------------------------------------------------------------------------
 
+# TODO:
 GPT_MODELS = [
-    "openai/gpt-5.4",
-    "openai/o4-mini",
+    "gpt-5.4",
+    "o4-mini",
+    # "openai/gpt-5.4",
+    # "openai/o4-mini",
 ]
 VLM_MODELS = [
-    "google/gemini-3.1-pro-preview",
-    "google/gemini-2.5-flash-lite",
-    "anthropic/claude-opus-4-5",
-    "anthropic/claude-haiku-4-5",
-    "openai/gpt-5.4",
-    "openai/o1",
-    "openai/o4-mini",
-    "deepseek/deepseek-v3.2",
-    "deepseek/deepseek-r1-0528",
-    "deepseek/deepseek-r1",
-    "qwen/qwen3.5-122b-a10b",
-    "moonshotai/kimi-k2",
+    "gemini-2.5-pro",
+    "gemini-3.1-pro-preview-low",
+    # "google/gemini-3.1-pro-preview",
+    # "google/gemini-2.5-flash-lite",
+    # "anthropic/claude-opus-4-5",
+    # "anthropic/claude-haiku-4-5",
+    # "openai/gpt-5.4",
+    # "openai/o1",
+    # "openai/o4-mini",
+    # "deepseek/deepseek-v3.2",
+    # "deepseek/deepseek-r1-0528",
+    # "deepseek/deepseek-r1",
+    # "qwen/qwen3.5-122b-a10b",
+    # "moonshotai/kimi-k2",
 ]
 CLAUDE_MODELS = ["anthropic/claude-opus-4-5", "anthropic/claude-haiku-4-5"]
 OSS_MODELS = [
@@ -244,7 +249,7 @@ def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> str:
     start_time = time.time()
 
     # keep calling until it works
-    response = requests.post(
+    response = post(
         server_url, headers=headers, data=json.dumps(payload), timeout=200
     )
     retry = 1
@@ -252,7 +257,7 @@ def query_model(args: "LaunchArgs | ModelQueryArgs", prompt: list[dict]) -> str:
         sleep_time = 240 + random.uniform(-90, 90)
         print(f"Retry {retry}. Model query failed with status code {response.status_code}. Error: {response.text}. Retrying in {sleep_time} seconds...")
         time.sleep(sleep_time)
-        response = requests.post(
+        response = post(
             server_url, headers=headers, data=json.dumps(payload), timeout=200
         )
         retry += 1
@@ -333,7 +338,7 @@ def query_model_streaming(
 
     start_time = time.time()
 
-    with requests.post(
+    with post(
         args.server_url,
         headers=headers,
         data=json.dumps(payload),

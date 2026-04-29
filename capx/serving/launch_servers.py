@@ -43,6 +43,7 @@ logger = logging.getLogger("launch_servers")
 OwlvitModelFamily = Literal["auto", "owlv2", "owlvit"]
 
 DEFAULT_OWLVIT_MODEL_PATH = "/home/fubin/ckpt/owlv2/owlv2-large-patch14-ensemble"
+LOOPBACK_NO_PROXY_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 # ---------------------------------------------------------------------------
 # Server Registry
@@ -347,6 +348,20 @@ def _build_cmd(server_config: dict[str, Any], workers: int) -> list[str]:
     return cmd
 
 
+def _ensure_loopback_no_proxy(env: dict[str, str]) -> None:
+    """Keep loopback traffic local while preserving outbound proxy settings."""
+    for key in ("NO_PROXY", "no_proxy"):
+        existing = [
+            item.strip()
+            for item in env.get(key, "").split(",")
+            if item.strip()
+        ]
+        for host in LOOPBACK_NO_PROXY_HOSTS:
+            if host not in existing:
+                existing.append(host)
+        env[key] = ",".join(existing)
+
+
 def start_server(
     server_config: dict[str, Any],
     workers: int = 1,
@@ -361,6 +376,7 @@ def start_server(
     gpu_idx = server_config.get("gpu_index")
 
     env = os.environ.copy()
+    _ensure_loopback_no_proxy(env)
     if gpu_idx is not None:
         env["CUDA_VISIBLE_DEVICES"] = str(gpu_idx)
     else:

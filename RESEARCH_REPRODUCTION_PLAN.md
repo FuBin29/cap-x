@@ -197,6 +197,7 @@ api_servers:
 ```bash
 source .venv/bin/activate
 
+# NOTE: 启动各种后端 API
 uv run --no-sync --active capx/serving/launch_servers.py --profile default
 
 uv run --no-sync --active capx/serving/launch_servers.py --profile full
@@ -334,6 +335,13 @@ uv run --no-sync --active capx/serving/openrouter_server.py \
   --api-key your-provider-token \
   --base-url https://your-provider.example.com/v1/ \
   --port 8110
+
+# NOTE: 启动 VLMs client
+uv run --no-sync --active capx/serving/openrouter_server.py --port 8110
+
+OPENROUTER_HTTP_PROXY=http://10.156.216.30:16371 \
+uv run --no-sync --active capx/serving/openrouter_server.py --port 8110
+
 ```
 
 然后 CaP-X 仍指向本地：
@@ -423,7 +431,7 @@ uv run --no-sync --active capx/envs/launch.py \
 ```bash
 uv run --no-sync --active capx/envs/launch.py \
   --config-path env_configs/cube_lifting/franka_robosuite_cube_lifting.yaml \
-  --model openrouter/google/gemini-2.5-pro-preview \
+  --model gemini-2.5-pro \
   --server-url http://127.0.0.1:8110/chat/completions \
   --total-trials 3 \
   --num-workers 1 \
@@ -446,7 +454,8 @@ uv run --no-sync --active capx/envs/launch.py \
 ```bash
 uv run --no-sync --active capx/envs/launch.py \
   --config-path env_configs/cube_stack/franka_robosuite_cube_stack_multiturn_vdm.yaml \
-  --model openrouter/google/gemini-2.5-pro-preview \
+  --model gemini-2.5-pro \
+  --visual-differencing-model gemini-2.5-pro \
   --server-url http://127.0.0.1:8110/chat/completions \
   --total-trials 3 \
   --num-workers 1 \
@@ -513,10 +522,12 @@ outputs/<task>/<model>/trial_01_sandboxrc_0_reward_1.000_taskcompleted_1/
 
 启动：
 
+
 ```bash
+# NOTE: Web UI 启动，似乎不会自动启动 VLMs client，需要先手动启动
 uv run --no-sync --active capx/envs/launch.py \
   --config-path env_configs/cube_stack/franka_robosuite_cube_stack.yaml \
-  --model openrouter/google/gemini-2.5-pro-preview \
+  --model gemini-2.5-pro \
   --web-ui True
 ```
 

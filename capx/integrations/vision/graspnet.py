@@ -12,6 +12,8 @@ import numpy as np
 import requests
 import viser.transforms as vtf
 
+from capx.utils.serve_utils import post
+
 # Service Configuration
 SERVICE_URL = os.environ.get("GRASPNET_SERVICE_URL", "http://127.0.0.1:8115")
 
@@ -160,7 +162,7 @@ def init_contact_graspnet(device: str = "cuda", checkpoint_path: str | None = No
 
         try:
             # start_time = time.time()
-            resp = requests.post(f"{SERVICE_URL}/plan", json=payload)
+            resp = post(f"{SERVICE_URL}/plan", json=payload)
             resp.raise_for_status()
             data = resp.json()
             # end_time = time.time()
@@ -201,7 +203,7 @@ def init_contact_graspnet_point_clouds() -> Any:
         }
 
         try:
-            resp = requests.post(f"{SERVICE_URL}/plan_point_clouds", json=payload)
+            resp = post(f"{SERVICE_URL}/plan_point_clouds", json=payload)
             resp.raise_for_status()
             data = resp.json()
         except requests.RequestException as e:

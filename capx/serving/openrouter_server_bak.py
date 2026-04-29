@@ -1,12 +1,9 @@
 import itertools
 import json
 import logging
-import os
 from pathlib import Path
 from typing import List, Literal, Optional, Union
-from urllib.parse import urlparse, urlunparse
 
-import httpx
 import tyro
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -34,7 +31,7 @@ class Message(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
-    model: str = "gemini-2.5-pro"
+    model: str = "openrouter/google/gemini-2.5-pro-preview"
     messages: list[Message]
     temperature: float | None = 0.2
     max_tokens: int | None = 256
@@ -73,79 +70,23 @@ def _load_api_keys(key_file: str) -> list[str]:
     return keys
 
 
-def _proxy_url(explicit_proxy: str | None = None) -> str | None:
-    candidates = [
-        explicit_proxy,
-        os.getenv("OPENROUTER_HTTP_PROXY"),
-        os.getenv("OPENROUTER_HTTPS_PROXY"),
-        os.getenv("HTTPS_PROXY"),
-        os.getenv("HTTP_PROXY"),
-        os.getenv("https_proxy"),
-        os.getenv("http_proxy"),
-    ]
-    for candidate in candidates:
-        if candidate is None:
-            continue
-        candidate = candidate.strip()
-        if candidate and candidate.lower() not in {"none", "false", "0"}:
-            return candidate
-    return None
-
-
-def _redact_url(url: str) -> str:
-    parsed = urlparse(url)
-    if parsed.username is None and parsed.password is None:
-        return url
-    host = parsed.hostname or ""
-    if parsed.port is not None:
-        host = f"{host}:{parsed.port}"
-    return urlunparse((parsed.scheme, host, parsed.path, parsed.params, parsed.query, parsed.fragment))
-
-
-def create_app(
-    api_key: str,
-    base_url: str,
-    async_client: bool = True,
-    http_proxy: str | None = None,
-) -> FastAPI:
+def create_app(api_key: str, base_url: str, async_client: bool = True) -> FastAPI:
     default_headers = {
         "HTTP-Referer": "https://github.com/nvidia-gear/CaP-X",
         "X-Title": "CaP-X",
     }
 
-    proxy_url = _proxy_url(http_proxy)
-    timeout = httpx.Timeout(200.0, connect=60.0)
-    outbound_http_client = None
-
     if async_client:
-        if proxy_url is not None:
-            logger.info("Using outbound proxy for OpenRouter requests: %s", _redact_url(proxy_url))
-            outbound_http_client = httpx.AsyncClient(
-                proxy=proxy_url,
-                timeout=timeout,
-                trust_env=False,
-            )
         client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
             default_headers=default_headers,
-            timeout=200.0,
-            http_client=outbound_http_client,
         )
     else:
-        if proxy_url is not None:
-            logger.info("Using outbound proxy for OpenRouter requests: %s", _redact_url(proxy_url))
-            outbound_http_client = httpx.Client(
-                proxy=proxy_url,
-                timeout=timeout,
-                trust_env=False,
-            )
         client = OpenAI(
             api_key=api_key,
             base_url=base_url,
             default_headers=default_headers,
-            timeout=200.0,
-            http_client=outbound_http_client,
         )
 
     app = FastAPI(title="OpenRouter Proxy", version="1.0.0")
@@ -166,7 +107,7 @@ def create_app(
                 client_kwargs = request.model_dump(exclude_none=True)
 
                 # Strip the "openrouter/" prefix if present so OpenRouter sees the
-                # native model identifier (e.g. "gemini-2.5-pro").
+                # native model identifier (e.g. "google/gemini-2.5-pro-preview").
                 model = client_kwargs.get("model", "")
                 if model.startswith("openrouter/"):
                     client_kwargs["model"] = model[len("openrouter/"):]
@@ -237,32 +178,16 @@ def create_app(
     async def health():
         return {"status": "ok"}
 
-    if outbound_http_client is not None:
-        if async_client:
-
-            @app.on_event("shutdown")
-            async def close_async_http_client():
-                await outbound_http_client.aclose()
-
-        else:
-
-            @app.on_event("shutdown")
-            def close_http_client():
-                outbound_http_client.close()
-
     return app
 
 
 def main(
     key_file: str = ".openrouterkey",
-    # key_file: str = ".aigcbestkey",
     api_key: str | None = None,
     host: str = "0.0.0.0",
     port: int = 8111,
-    # base_url: str = "https://openrouter.ai/api/v1/",
-    base_url: str = "https://api2.aigcbest.top/v1",
+    base_url: str = "https://openrouter.ai/api/v1/",
     async_client: bool = True,
-    http_proxy: str | None = None,
 ):
     """
     Start the OpenRouter Proxy Server.
@@ -274,12 +199,7 @@ def main(
         api_key = keys[0]
         logger.info(f"Loaded API key from {key_file}")
 
-    app = create_app(
-        api_key=api_key,
-        base_url=base_url,
-        async_client=async_client,
-        http_proxy=http_proxy,
-    )
+    app = create_app(api_key=api_key, base_url=base_url, async_client=async_client)
     uvicorn.run(app, host=host, port=port)
 
 

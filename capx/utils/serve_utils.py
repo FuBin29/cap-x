@@ -1,6 +1,25 @@
 import time
+from urllib.parse import urlparse
 
 import requests
+
+
+def _is_loopback_url(url: str) -> bool:
+    host = urlparse(url).hostname
+    return host in {"127.0.0.1", "::1", "localhost"}
+
+
+def post(url: str, **kwargs) -> requests.Response:
+    if not _is_loopback_url(url):
+        return requests.post(url, **kwargs)
+
+    with requests.Session() as session:
+        session.trust_env = False
+        return session.post(url, **kwargs)
+
+
+def _post_json(url: str, payload: dict, timeout_seconds: float) -> requests.Response:
+    return post(url, json=payload, timeout=timeout_seconds)
 
 
 def post_with_retries(
@@ -29,7 +48,7 @@ def post_with_retries(
     attempts = 0
     while time.time() < deadline and attempts < max_retries:
         try:
-            resp = requests.post(url, json=payload, timeout=timeout_seconds)
+            resp = _post_json(url, payload, timeout_seconds)
             resp.raise_for_status()
             return resp.json()
         except requests.RequestException as e:
@@ -74,7 +93,7 @@ def post_with_queue_tolerance(
     attempts = 0
     while time.time() < deadline and attempts < max_retries:
         try:
-            resp = requests.post(url, json=payload, timeout=timeout_seconds)
+            resp = _post_json(url, payload, timeout_seconds)
             if resp.status_code == 503:
                 # Server is busy / model not ready -- treat as transient
                 last_err = requests.HTTPError(
