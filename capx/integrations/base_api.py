@@ -92,6 +92,8 @@ class ApiBase(ABC):
     @abstractmethod
     def functions(self) -> dict[str, Callable[..., Any]]:
         """Return mapping of public function name -> callable."""
+        # 要求子类必须实现该方法。它返回一个字典，将 API 暴露的公共函数名映射到实际的 \
+        # 可调用对象（Callable）上。这决定了哪些方法可以被 LLM 或外部调用。
 
     def combined_doc(self) -> str:
         """Aggregate function docs in a simple, consistent format.
@@ -101,6 +103,11 @@ class ApiBase(ABC):
               Summary: first line of function doc
               Doc: full function docstring (Google style recommended)
         """
+        # 通过 Python 的 inspect 模块自动提取 functions() 中注册的所有函数的 \
+        # 签名（参数）和文档字符串（Docstrings），将其拼接成一个标准化的文本格式。 \
+        # 这是专门用来生成给 LLM 提示词 (Prompt) 的，能够让智能体知晓该工具 \
+        # 有哪些方法以及如何使用。
+        
         # we need to discuss this design further down the line
         lines: list[str] = []
         # lines: list[str] = [f"API: {self.__class__.__name__}", ""]

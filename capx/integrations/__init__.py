@@ -14,6 +14,7 @@ from .franka.handover_reduced import FrankaHandoverApiReduced
 from .franka.handover_reduced_exampleless import FrankaHandoverApiReducedExampleless
 from .franka.two_arm_lift import FrankaTwoArmLiftApi
 from .franka.two_arm_lift_privileged import FrankaTwoArmLiftPrivilegedApi
+from .debug.state import RobotStateDebugApi
 try:
     from .franka.libero import FrankaLiberoApi
     from .franka.libero_privileged import FrankaLiberoPrivilegedApi
@@ -25,6 +26,7 @@ except ImportError:
     print("LIBERO not installed, skipping LIBERO APIs")
 
 register_api("FrankaControlPrivilegedApi", FrankaControlPrivilegedApi)
+register_api("RobotStateDebugApi", RobotStateDebugApi)
 register_api("FrankaControlApi", lambda env: FrankaControlApi(env, use_sam3=True))
 register_api("FrankaControlApiReduced", FrankaControlApiReduced)
 register_api(

@@ -557,6 +557,8 @@ http://localhost:8200
 
 ### 5.1 当前 API 注入机制
 
+capx/integrations/base_api.py
+
 `ApiBase.functions()` 返回暴露给模型生成代码的函数。
 
 `ApiBase.combined_doc()` 会提取：
@@ -564,6 +566,8 @@ http://localhost:8200
 - 函数名
 - Python signature
 - docstring
+
+capx/envs/tasks/base.py
 
 然后 `CodeExecutionEnvBase._get_complete_prompt()` 将这些文档拼进 prompt 的 `APIs:` 部分。
 
@@ -660,7 +664,24 @@ print(obs["robot0_robotview"]["images"]["depth"].shape)
 - 无 traceback。
 - 若启用 Web UI，`get_observation` step 可见。
 
+
+
 ## 6. 阶段六：新增 func tool 并测试
+
+
+### API 命名逻辑
+
+- 无后缀版本：论文记号 S2，使用 high-level API
+  - 定义了 FrankaControlApi。这是标准的高级 API（High-level API），它在内部封装和隐藏了大量复杂的流程（例如把 SAM2/SAM3、OWL-ViT 等视觉感知聚合成了可以直接调用的高级位姿获取方法等），为模型或用户提供高度抽象的接口。
+- _privileged 后缀：论文记号 S1，upper-bound API，提供更直接的环境访问和控制能力，适合 privileged/oracle 评测和研究
+  - 定义了 FrankaControlPrivilegedApi。从代码中可以看出，这是 Oracle/特权级别 的实现。例如在 get_object_pose 方法中，它并没有调用真实的视觉模型，而是通过写死逻辑（"red" in object_name and "cube" in object_name）或直接从环境（self._env.get_observation()）里读取底层 state 信息来直接返回物体的精确位姿。
+- _reduced 后缀：论文记号 S3，low-level AP，更底层
+  - 定义了 FrankaControlApiReduced。这是更为基础的底层 API（Low-level API）。它把高级封装拆解开了，直接暴露了各个独立的视觉基础模型原语（如 detect_object_owlvit, segment_sam2, segment_sam3_point_prompt）以及机器人基础动作原语（IK解解算、open_gripper、close_gripper 等），要求 Agent 必须自己组合这些基础原语来完成任务。
+- _reduced_exampleless 后缀：论文记号 S4，low-level API，且不包含示例代码，适合研究模型在缺乏示例时的 API 使用能力
+  - 定义了 FrankaControlApiReducedExampleless。它继承自 FrankaControlApiReduced，在功能上与 S3 完全一致。它的核心不同点在于重写了 combined_doc() 方法，并引入了 _strip_examples 函数——该函数会遍历并剔除所有 API docstring 中的 Example: 或 Examples: 块。
+- _reduced_skill_library 后缀：Agent0
+  - 定义了 FrankaControlApiReducedSkillLibrary，同样继承自 FrankaControlApiReduced。在底层 API 的基础上，它额外注入了一组“经验库/技能库（Skill Library）”（代码注释写明了这些是来源于大模型历史生成的 9 个高频复用函数）。这包括坐标转换（rotation_matrix_to_quaternion）和视觉矩阵运算（depth_to_point_cloud、mask_to_world_points）等。
+
 
 ### 6.1 选择第一个新增 tool
 
@@ -735,6 +756,13 @@ apis:
   - RobotStateDebugApi
 ```
 
+实际完成记录（2026-04-30）：
+
+- 已新增通用 debug API 文件：`capx/integrations/debug/state.py`。
+- 已新增包导出文件：`capx/integrations/debug/__init__.py`。
+- 已在 `capx/integrations/__init__.py` 注册 `RobotStateDebugApi`。
+- `describe_robot_state()` 为只读工具，不修改底层环境状态；返回可序列化的 `robot_joint_pos`、`robot_cartesian_pos`、派生的 `gripper_state`、`sim_step_count`（缺失字段自动省略）。
+
 ### 6.3 单元验证
 
 新增或扩展测试：
@@ -760,6 +788,22 @@ uv run pytest tests/test_debug_api.py -q
 
 - 测试全部通过。
 - stdout 中能看到 robot state 字段。
+
+实际测试结果（2026-04-30）：
+
+```bash
+uv run pytest tests/test_debug_api.py -q
+```
+
+结果：
+
+- `4 passed, 2 warnings in 6.25s`
+- 覆盖项：API registry、`combined_doc()` prompt 暴露、直接调用返回 dict、`CodeExecutionEnvBase.step()` 中直接调用 `describe_robot_state()` 且 `sandbox_rc == 0`。
+- 额外语法检查通过：
+
+```bash
+python -m py_compile capx/integrations/debug/state.py tests/test_debug_api.py
+```
 
 ### 6.4 小规模任务验证
 
@@ -793,6 +837,19 @@ uv run --no-sync --active capx/envs/launch.py \
 - `initial_prompt.txt` 或 per-trial prompt 中包含 `describe_robot_state()`。
 - `summary.txt` 中 stdout 有 state 输出。
 - Web UI 中能看到 `describe_robot_state` step。
+
+实际完成记录（2026-04-30）：
+
+- 已新增 `env_configs/debug/franka_robosuite_cube_lifting_debug_api.yaml`，API 列表为：
+
+```yaml
+apis:
+  - FrankaControlApiReduced
+  - RobotStateDebugApi
+```
+
+- 纠正说明：仅把 `RobotStateDebugApi` 加入 YAML 只能保证 prompt/执行命名空间中存在 `describe_robot_state()`；若使用原始 oracle code 且 oracle code 没有显式调用该函数，则 `summary.txt` stdout 不会自动出现 state 输出，Web UI 也不会自动出现该 step。要验证 stdout/Web UI step，需要执行包含 `state = describe_robot_state(); print(state)` 的调试代码或在 debug oracle 中显式调用该函数。
+- 为避免启动视觉/运动服务和真实 robosuite 任务带来的额外依赖与耗时，本阶段已用独立 fake env 单元测试完成新增 API 的注册、prompt 暴露、直接调用和执行环境命名空间全流程验证，不影响原项目环境与任务实现。
 
 ## 7. 阶段七：RLBench 环境适配规划
 
