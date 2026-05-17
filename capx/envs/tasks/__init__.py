@@ -12,6 +12,9 @@ from .franka.franka_cube_restack import FrankaRestackCodeEnv
 from .franka.franka_lift import FrankaLiftCodeEnv
 from .franka.franka_nut_assembly import FrankaNutAssemblyCodeEnv
 from .franka.franka_pick_place import FrankaPickPlaceCodeEnv
+from .franka.franka_rlbench_close_drawer import FrankaRLBenchCloseDrawerCodeEnv
+from .franka.franka_rlbench_pick_up_cup import FrankaRLBenchPickUpCupCodeEnv
+from .franka.franka_rlbench_reach_target import FrankaRLBenchReachTargetCodeEnv
 from .franka.franka_spill_wipe import FrankaSpillWipeCodeEnv
 from .franka.two_arm_handover import TwoArmHandoverCodeEnv
 from .franka.two_arm_lift import TwoArmLiftCodeEnv
@@ -22,6 +25,34 @@ register_config(
     CodeExecEnvConfig(
         low_level="franka_real_low_level",
         apis=["FrankaControlApi"],
+    ),
+)
+
+register_exec_env("franka_rlbench_reach_target_code_env", FrankaRLBenchReachTargetCodeEnv)
+register_config(
+    "franka_rlbench_reach_target_code_env",
+    CodeExecEnvConfig(
+        low_level="franka_rlbench_remote_low_level",
+        apis=["FrankaRLBenchApi"],
+        privileged=True,
+    ),
+)
+register_exec_env("franka_rlbench_pick_up_cup_code_env", FrankaRLBenchPickUpCupCodeEnv)
+register_config(
+    "franka_rlbench_pick_up_cup_code_env",
+    CodeExecEnvConfig(
+        low_level="franka_rlbench_remote_low_level",
+        apis=["FrankaRLBenchApi"],
+        privileged=True,
+    ),
+)
+register_exec_env("franka_rlbench_close_drawer_code_env", FrankaRLBenchCloseDrawerCodeEnv)
+register_config(
+    "franka_rlbench_close_drawer_code_env",
+    CodeExecEnvConfig(
+        low_level="franka_rlbench_remote_low_level",
+        apis=["FrankaRLBenchApi"],
+        privileged=True,
     ),
 )
 register_exec_env("franka_robosuite_spill_wipe_code_env", FrankaSpillWipeCodeEnv)

@@ -1,0 +1,20 @@
+env:
+  _target_: capx.envs.tasks.franka.franka_rlbench_close_drawer.FrankaRLBenchCloseDrawerCodeEnv
+  cfg:
+    _target_: capx.envs.tasks.base.CodeExecEnvConfig
+    low_level:
+      _target_: capx.envs.simulators.rlbench_remote.RLBenchRemoteEnv
+      server_url: http://127.0.0.1:8120
+      task_name: close_drawer
+      max_steps: 300
+      privileged: true
+    apis:
+      - FrankaRLBenchApi
+    privileged: true
+    enable_render: false
+
+record_video: true
+output_dir: ./outputs/rlbench_close_drawer
+
+trials: 1
+num_workers: 1

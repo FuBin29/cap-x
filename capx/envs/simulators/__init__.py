@@ -5,6 +5,13 @@ from capx.envs.base import list_envs, register_env
 from .franka_real import FrankaRealLowLevel
 register_env("franka_real_low_level", FrankaRealLowLevel)
 
+try:
+    from .rlbench_remote import RLBenchRemoteEnv
+
+    register_env("franka_rlbench_remote_low_level", RLBenchRemoteEnv)
+except Exception:
+    print("RLBench remote env not available!")
+
 # NOTE: Can only have one of Robosuite or LIBERO installed at a time!
 # Using Robosuite run: uv sync --extra robosuite
 try:
