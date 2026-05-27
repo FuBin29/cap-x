@@ -1,0 +1,1 @@
+"""Close drawer module tests."""

@@ -167,6 +167,18 @@ docker run -it \
   -v ~/projects/artance:/workspace \
   rlbench-fubin:v1.2 \
   /bin/bash
+
+docker run -it \
+  --name rlbench-vis \
+  --net=host \
+  --gpus all \
+  -e DISPLAY=localhost:14.0 \
+  -e NVIDIA_DRIVER_CAPABILITIES=all \
+  --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
+  -v ~/.Xauthority:/root/.Xauthority \
+  -v ~/projects/artance:/workspace \
+  rlbench-fubin:v1.2 \
+  /bin/bash
 ```
 
 进入容器：
