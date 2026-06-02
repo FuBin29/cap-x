@@ -363,7 +363,7 @@ uv run --no-sync --active python close_drawer/part_adjacency_plane_test.py
 
 ## 2026-05-25: 平移关节末端移动目标生成
 
-已新增 `common/prismatic_joint_motion.py`，并为 `close_drawer` 和 `push_button` 提供 `end_effector_motion_test.py` wrapper。该模块用于把上一步平面拟合得到的接触点和法线转换成 cap-x Franka reduced control API 可直接使用的平移关节末端目标：
+已新增统一的 `common/end_effector_motion.py`，并为 `close_drawer` 和 `push_button` 提供 `end_effector_motion_test.py` wrapper。该模块用于把上一步平面拟合得到的接触点和法线转换成可执行的平移关节末端目标：
 
 ```text
 part_adjacency_plane_summary.json 中的 camera-frame contact_center / plane_normal
@@ -389,7 +389,7 @@ uv run --no-sync --active python push_button/end_effector_motion_test.py
 默认输出：
 
 ```text
-<task>/outputs/end_effector_motion/<plane_summary_parent>/prismatic_joint_motion_target.json
+<task>/outputs/end_effector_motion/<episode_key>/<frame>/end_effector_motion_target.json
 ```
 
 常用参数：
@@ -404,29 +404,31 @@ uv run --no-sync --active python push_button/end_effector_motion_test.py
 - `--close-gripper-before-motion/--no-close-gripper-before-motion`: 是否在控制序列最前面加入 `close_gripper()`。
 - `--orientation-mode keep-current`: 默认保留当前 gripper 姿态；RLBench/PyRep 的 `gripper_pose` 是 `[x, y, z, qx, qy, qz, qw]`，模块会转换为 cap-x control API 使用的 `[w, x, y, z]`。
 
-控制 API 对接方式参考 `capx/integrations/franka/control_reduced.py`：
+控制 API 对接方式参考 `capx/integrations/franka/control_reduced.py`。`end_effector_motion_target.json` 采用统一 schema，RLBench 本地执行侧只需要读取 `motion_steps`：
 
 ```python
 import json
 import numpy as np
 
-target = json.loads(open("close_drawer/outputs/end_effector_motion/.../prismatic_joint_motion_target.json").read())
+target = json.loads(open("close_drawer/outputs/end_effector_motion/.../end_effector_motion_target.json").read())
 
-if target["result"]["close_gripper_before_motion"]:
+if target["close_gripper_before_motion"]:
     close_gripper()
 
-quat = np.asarray(target["result"]["quaternion_wxyz"], dtype=np.float64)
-for key in ["approach_position", "target_position", "final_position"]:
-    position = np.asarray(target["result"][key], dtype=np.float64)
+for step in target["motion_steps"]:
+    position = np.asarray(step["position"], dtype=np.float64)
+    quat = np.asarray(step["quaternion_wxyz"], dtype=np.float64)
     joints = solve_ik(position, quat)
     move_to_joints(joints)
+    if step["name"] in set(target["close_gripper_after_steps"]):
+        close_gripper()
 ```
 
 注意：当前脚本是目标生成和 dry-run 验证，不会直接连接 RLBench 或移动机械臂。实际执行前建议先只移动到 `approach_position`，确认 IK 可解、路径不碰撞，再移动到 `target_position` 和 `final_position`。
 
 ### 本地 RLBench 直接执行末端目标
 
-如果要绕过 cap-x HTTP RLBench adapter，直接使用本地 RLBench/PyRep 环境执行上面生成的 `prismatic_joint_motion_target.json`，应按 `result.control_api_sequence` 或 `python_usage` 中记录的顺序执行：可选 `close_gripper()`，然后依次移动到 `approach_position`、`target_position` 和 `final_position`。旋转关节任务的本地执行 API 尚未配置。
+如果要绕过 cap-x HTTP RLBench adapter，直接使用本地 RLBench/PyRep 环境执行上面生成的 `end_effector_motion_target.json`，应按统一 schema 中的 `motion_steps`、`close_gripper_before_motion` 和 `close_gripper_after_steps` 执行。平移和旋转关节任务在 RLBench 本地侧使用同一个读取/执行接口。
 
 输出目录建议沿用：
 
@@ -486,7 +488,36 @@ bash run_batch_module_tests.sh
 TASKS="close_drawer push_button" \
 MODULES="part_adjacency_plane end_effector_motion" \
 bash run_batch_module_tests.sh
+
+TASKS="close_drawer push_button toilet_seat_down" \
+MODULES="contact_graspnet_pose" \
+bash run_batch_module_tests.sh
+
+TASKS="toilet_seat_down" \
+MODULES="sam3 sam3_point_selection pointcloud contact_graspnet_pose" \
+bash run_batch_module_tests.sh
+
+TASKS="toilet_seat_down" \
+MODULES="contact_guided_remote_rotation end_effector_motion" \
+bash run_batch_module_tests.sh --guide-source graspnet --axis-fit-method gap_ransac
+
+TASKS="close_microwave close_fridge" \
+MODULES="implicit_door_remote_rotation end_effector_motion" \
+bash run_batch_module_tests.sh
 ```
+
+`--guide-source` ：
+
+- `graspnet`
+- `vlm`
+
+轴拟合方法 `--axis-fit-method` 对比：
+
+- `gap_ransac`：默认方法。先找远端 part A 点到 part B 的最近邻配对，用两者 midpoint 表示门/框缝隙中心，再用 RANSAC 去除离群 midpoint，最后 SVD refine 成直线。
+- `gap_svd`：同样使用缝隙 midpoint，但直接 SVD/PCA 拟合，适合干净分割和较少离群点。
+- `neighbor_svd`：旧方法。把远端 part A 邻近点和 part B 邻近点直接合并后 SVD/PCA 拟合，作为 baseline 保留。
+
+
 
 输出按 task、module、episode key 分层，形如：
 
@@ -499,7 +530,7 @@ close_fridge/outputs/pointcloud/variation0_episode0_frame035_wrist/35/pointcloud
 
 点云重建对 `episodes.txt` 的离线 RLBench depth PNG 做了兼容：运行时会从同 episode 的 `low_dim_obs.pkl` 导出一份 frame info JSON，并用 camera near/far 把 RLBench normalized depth PNG 还原为米制 depth。该步骤只在实际运行 `pointcloud` 模块时发生。
 
-`run_batch_module_tests.sh` 已支持按需执行 `part_adjacency_plane` 和 `end_effector_motion`；它们仍不在默认 `MODULES` 中，需要通过环境变量显式启用。脚本内预设 task 关节类型：`close_drawer` 和 `push_button` 使用 prismatic 分支并调用平移关节 wrapper；`close_fridge`、`close_microwave`、`toilet_seat_down` 暂按 revolute 处理，但旋转关节 API 尚未配置，会输出 `NotImplement` 并跳过。
+`run_batch_module_tests.sh` 已支持按需执行 `part_adjacency_plane`、`contact_guided_remote_rotation`、`implicit_door_remote_rotation` 和 `end_effector_motion`；它们仍不在默认 `MODULES` 中，需要显式启用。`contact_guided_remote_rotation` 可通过 bash 参数 `--guide-source {graspnet|vlm}` 和 `--axis-fit-method {gap_ransac|gap_svd|neighbor_svd}` 配置，也可用环境变量 `GUIDE_SOURCE`、`AXIS_FIT_METHOD` 设置默认值。冰箱/微波炉的隐式门轴分支使用 `--door-guide-source {vlm|graspnet}` 或 `DOOR_GUIDE_SOURCE`，默认 `vlm`。脚本内预设 task 关节类型：`close_drawer` 和 `push_button` 使用 prismatic 分支；`close_fridge`、`close_microwave` 和 `toilet_seat_down` 使用 revolute 分支。旋转分支默认生成 closed-gripper push 轨迹，也可在 task wrapper 中切回旧的 GraspNet grasp-follow 轨迹。两类分支最终都由各自的 `end_effector_motion_test.py` 写出统一的 `end_effector_motion_target.json`。
 
 ## 2026-05-26: 交互参数推理和估计
 
@@ -515,16 +546,23 @@ uv run --no-sync --active python push_button/part_adjacency_plane_test.py \
   --source-summary push_button/outputs/pointcloud/variation0_episode2_frame036_wrist/36/pointcloud_summary.json
 ```
 
-旋转关节先实现了 `toilet_seat_down` 的接触点引导远端旋转流程：
+旋转关节先实现了 `toilet_seat_down` 的接触点引导远端旋转流程。guide 支持两种来源：默认读取 Contact-GraspNet summary 中最高分候选的 best contact point；也可以切回原始 VLM 2D 接触点。
 
 ```text
-VLM 接触点
+Contact-GraspNet best 接触点 或 VLM 接触点
   -> part A ("toilet lid") 上最近 3D 点 a
   -> part A 中远离 a 的远端点集 C
-  -> C 与 part B ("toilet") 邻近区域拟合旋转轴 d
-  -> 分别测试 d 的正/负小角度旋转与 part B 的邻近冲突
+  -> 在 C 与 part B ("toilet seat") 的点云缝隙中采样 midpoint
+  -> 用 gap_ransac / gap_svd 拟合旋转轴 d
+  -> 分别测试 d 的正/负小角度旋转与非 part A 全部点云的邻近冲突
   -> 选择低冲突方向，输出 a 绕 d 旋转 40 度的 waypoints
 ```
+
+轴拟合方法可通过 `--axis-fit-method` 对比：
+
+- `gap_ransac`：默认方法。先找远端 part A 点到 part B 的最近邻配对，用两者 midpoint 表示门/框缝隙中心，再用 RANSAC 去除离群 midpoint，最后 SVD refine 成直线。
+- `gap_svd`：同样使用缝隙 midpoint，但直接 SVD/PCA 拟合，适合干净分割和较少离群点。
+- `neighbor_svd`：旧方法。把远端 part A 邻近点和 part B 邻近点直接合并后 SVD/PCA 拟合，作为 baseline 保留。
 
 入口脚本：
 
@@ -532,11 +570,202 @@ VLM 接触点
 uv run --no-sync --active python toilet_seat_down/contact_guided_remote_rotation_test.py \
   --episode-key variation0_episode2_frame015_wrist \
   --frame-stem 15
+
+uv run --no-sync --active python toilet_seat_down/contact_guided_remote_rotation_test.py \
+  --episode-key variation0_episode1_frame000_wrist \
+  --frame-stem 0 \
+  --guide-source vlm \
+  --axis-fit-method gap_ransac
+
+
+# 切回原 VLM 2D guide，并使用旧轴拟合作为 baseline
+uv run --no-sync --active python toilet_seat_down/contact_guided_remote_rotation_test.py \
+  --episode-key variation0_episode2_frame015_wrist \
+  --frame-stem 15 \
+  --guide-source vlm \
+  --axis-fit-method neighbor_svd
 ```
+
+碰撞方向评分默认使用 `--collision-environment all_non_part_a`，即旋转后的 part A 与输入点云中除 part A 之外的全部点比较；`--collision-environment part_b` 保留为旧行为/消融对照。为让该检查真正覆盖环境点，batch 脚本对 revolute 任务运行 `pointcloud` 时默认保留完整场景点云，仅 prismatic 任务继续使用 `--mask-only`。
 
 主要输出：
 
 - `toilet_seat_down/outputs/contact_guided_remote_rotation/*/contact_guided_remote_rotation_summary.json`
 - `toilet_seat_down/outputs/contact_guided_remote_rotation/*/*_remote_rotation_visualization.ply`
 
+随后运行 `toilet_seat_down/end_effector_motion_test.py`，会把该旋转分析结果转成统一末端轨迹。默认 `--motion-mode closed_gripper_push`：先闭合夹爪，把 EEF 放到接触点旋转切向的反侧，再沿预测旋转方向推动部件；旧的 Contact-GraspNet 抓取跟随路线可用 `--motion-mode grasp_follow` 保留：
+
+```text
+toilet_seat_down/outputs/end_effector_motion/<episode_key>/<frame>/end_effector_motion_target.json
+```
+
 PLY 可视化标签约定：蓝色为旋转轴，白色为接触点 a，青色为旋转 waypoint，品红色为远端 part A 邻近点，橙色为 part B 邻近点。
+
+### 冰箱 / 微波炉隐式门轴 API
+
+`close_fridge` 和 `close_microwave` 不再复用马桶盖的可见缝隙轴拟合。新增 `common/implicit_door_remote_rotation.py`，流程是：
+
+```text
+handle mask 3D center 作为默认交互点，VLM/GraspNet guide 保留为诊断或可选回退
+  -> door mask 点云拟合门板平面和 PCA 主轴
+  -> task_configs.py 传入 door_opening_type=side、hinge_axis_orientation=vertical
+  -> 优先用 pointcloud_summary 的 camera extrinsics 把 world z 转到点云 frame
+  -> handle_center 投影到门板宽轴，hinge 取 handle 对侧竖直边
+  -> handle_center 绕隐式 hinge 旋转生成 waypoints
+  -> 根据 closing_direction_sign 选择旋转方向，输出与旧旋转 summary 兼容的 axis/waypoints
+```
+
+入口示例：
+
+```bash
+uv run --no-sync --active python close_fridge/implicit_door_remote_rotation_test.py \
+  --episode-key variation0_episode0_frame035_wrist \
+  --frame-stem 35
+
+# 如需复现实验早期行为，可改为使用 VLM/GraspNet guide 最近点作为交互点
+uv run --no-sync --active python close_fridge/implicit_door_remote_rotation_test.py \
+  --episode-key variation0_episode0_frame035_wrist \
+  --frame-stem 35 \
+  --contact-point-mode guide
+
+uv run --no-sync --active python close_microwave/implicit_door_remote_rotation_test.py \
+  --episode-key variation0_episode2_frame054_wrist \
+  --frame-stem 54
+
+uv run --no-sync --active python close_fridge/end_effector_motion_test.py \
+  --episode-key variation0_episode0_frame035_wrist \
+  --frame-stem 35
+```
+
+主要输出：
+
+- `close_fridge/outputs/implicit_door_remote_rotation/<episode_key>/<frame>/implicit_door_remote_rotation_summary.json`
+- `close_microwave/outputs/implicit_door_remote_rotation/<episode_key>/<frame>/implicit_door_remote_rotation_summary.json`
+- `<task>/outputs/end_effector_motion/<episode_key>/<frame>/end_effector_motion_target.json`
+
+批量运行示例：
+
+```bash
+TASKS="close_fridge close_microwave" \
+MODULES="implicit_door_remote_rotation end_effector_motion" \
+bash run_batch_module_tests.sh --door-guide-source vlm
+```
+
+
+## 2026-05-27: Contact-GraspNet 交互/抓取位姿预测
+
+已新增 `common/contact_graspnet_pose.py` 和 `run_task_module.py contact_graspnet_pose`，用于读取已有的 VLM 接触点、SAM3 point-selection 结果、RGB-D 和相机 metadata，调用 cap-x 的 Contact-GraspNet HTTP 服务预测候选交互/抓取位姿。
+
+默认目标 mask 是 `common/task_configs.py` 中 `sam3_prompts` 的第一个 prompt；可通过 task config 的 `contact_grasp_prompt` 或 CLI 的 `--target-prompt` 覆盖。候选选择规则当前为最高 `score`。
+
+运行前需要启动 Contact-GraspNet 服务：
+
+```bash
+cd /home/fubin/projects/artance/cap-x
+uv run --no-sync --active python -m capx.serving.launch_contact_graspnet_server --port 8115 --host 127.0.0.1 --device cuda
+```
+
+然后运行：
+
+```bash
+cd /home/fubin/projects/artance/cap-x/artance_tests
+uv run --no-sync --active python run_task_module.py contact_graspnet_pose --task close_drawer \
+  --episode-line /home/fubin/projects/artance/RLBench/data/RLBench-data/close_drawer/variation0/episodes/episode3/wrist_rgb/51.png
+```
+
+常用参数：
+
+- `--target-prompt "drawer handle"`: 覆盖默认目标 mask prompt。
+- `--service-url http://127.0.0.1:8115`: 指定 Contact-GraspNet 服务。
+- `--grasp-z-offset 0.1034`: 默认沿 Contact-GraspNet grasp 局部 +z 方向补偿其内部 `gripper_depth=0.1034m`，把可执行 EEF/TCP 目标从 gripper base origin 推到接触点附近；如果只想保留原始 Contact-GraspNet 矩阵，可显式传 `--grasp-z-offset 0.0`。
+- `--mask <mask.npy>`: 绕过 SAM3 summary，直接指定目标 mask。
+- `--no-save-visualization`: 不保存点云 PLY 可视化。
+- `--visualization-top-k 10`: 额外显示最高分前 K 个候选的简化位姿。
+- `--visualization-subsample-factor 2`: 点云可视化降采样倍率。
+
+输出目录默认是：
+
+```text
+<task>/outputs/contact_graspnet_pose/<episode_key>/<frame>/
+```
+
+输出内容：
+
+- `grasps_camera.npy`: Contact-GraspNet 原始候选 `(K, 4, 4)`，camera frame。
+- `grasp_poses_camera.npy`: 应用 `--grasp-z-offset` 后的候选；默认比原始候选沿 grasp 局部 +z 前移 `0.1034m`。
+- `scores.npy`: 候选分数。
+- `contact_points_camera.npy`: Contact-GraspNet 输出的 contact points。
+- `segmap.npy`: 发送给服务的 instance segmentation map，目标 mask 像素为 `segmap_id=1`。
+- `contact_graspnet_visualization.ply`: camera-frame 点云可视化。RGB 点云会变暗，目标 mask 为橙色；best grasp 的 x/y/z 轴分别为红/绿/蓝，best origin 为白色，best contact point 为黄色；top-k 其它候选以紫色/橙色标记。
+- `contact_graspnet_summary.json`: 记录输入、目标 mask、最高分候选、camera/world frame pose、visualization label legend 和输出路径。
+
+关于 `control_reduced.py` 的 `+0.12m`：cap-x 原封装在 Contact-GraspNet 输出后立刻右乘 `translation([0, 0, 0.12])`，再把该 pose 返回给后续 `goto_pose`/IK。Contact-GraspNet 上游构造 grasp 时使用 `gripper_depth=0.1034m`，原始矩阵的 origin 天然会在 contact point 后方约 10.34cm；RLBench 这条 ArtAnce 测试链直接执行 EEF pose，没有 `control_reduced.py` 的 TCP offset 补偿，因此当前默认使用更精确的 `+0.1034m`。summary 中会同时记录 raw grasp 和 offset 后 pose 到 contact point 的距离诊断。
+
+
+## 2026-05-29: Contact-Guided Hierarchical Part Grounding
+
+已在保留旧版 `contact_point -> sam3 -> sam3_point_selection` 流程的基础上，新增更通用的部件分析链路：
+
+```text
+image + task prompt
+  -> VLM structured grounding
+  -> VLM-generated SAM3 object/support/interaction prompts
+  -> SAM3 candidate masks
+  -> IoU grouping + hierarchy scoring + contact soft guidance
+  -> mutually exclusive object/support/interaction masks
+```
+
+新增模块：
+
+- `common/vlm_interaction_grounding.py`: 结构化 VLM grounding，输出 `target_object`、`interaction_part`、`support_part`、`contact_pixel_yx` 和分角色 SAM3 prompts。
+- `common/hierarchical_part_analysis.py`: 通用 mask grouping、层级三元组选择和 role-based overlap resolution。
+- `run_task_module.py structured_grounding`: 只运行 VLM 结构化 grounding。
+- `run_task_module.py part_analysis`: 运行完整 VLM grounding + SAM3 + 层级 mask selection。
+- `pointcloud` 新增 `--part-analysis-summary`，可直接读取新方案的 final masks。
+
+运行完整新链路：
+
+```bash
+cd /home/fubin/projects/artance/cap-x/artance_tests
+
+uv run --no-sync --active python run_task_module.py part_analysis \
+  --task close_fridge \
+  --episode-line /home/fubin/projects/artance/RLBench/data/RLBench-data/close_fridge/variation0/episodes/episode0/wrist_rgb/35.png \
+  --model gemini-2.5-pro \
+  --vlm-server-url http://127.0.0.1:8110/chat/completions \
+  --sam3-service-url http://127.0.0.1:8114 \
+  --top-k 5 \
+  --no-show
+```
+
+用新方案输出重建点云：
+
+```bash
+uv run --no-sync --active python run_task_module.py pointcloud \
+  --task close_fridge \
+  --episode-line /home/fubin/projects/artance/RLBench/data/RLBench-data/close_fridge/variation0/episodes/episode0/wrist_rgb/35.png \
+  --mask-source part_analysis \
+  --mask-only
+```
+
+`pointcloud --mask-source auto` 是默认值。episode 输入时会按以下顺序自动选择已有 summary：
+
+```text
+part_analysis_summary.json -> point_selection_summary.json -> sam3/summary.json
+```
+
+因此刚跑完 `MODULES="structured_grounding part_analysis"` 后，再跑 `MODULES="pointcloud"` 会自动读取新版 `part_analysis` masks。若要强制旧版最近 mask 方案，使用 `--mask-source point_selection` 或批量变量 `POINTCLOUD_MASK_SOURCE=point_selection`。
+
+批量运行：
+
+```bash
+TASKS="close_drawer push_button close_fridge close_microwave toilet_seat_down" \
+MODULES="structured_grounding part_analysis" \
+bash run_batch_module_tests.sh
+
+TASKS="close_drawer push_button close_fridge close_microwave toilet_seat_down" \
+MODULES="part_analysis" \
+bash run_batch_module_tests.sh
+```
+
+实现约束：新 mask selection 不包含 fridge、microwave、drawer、handle 的对象/形状/位置先验，只使用 role、SAM3 score、prompt support、2D contact soft distance、dilated containment 和 role priority overlap resolution。

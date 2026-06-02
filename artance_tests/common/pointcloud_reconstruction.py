@@ -43,6 +43,7 @@ class PointCloudReconstructionConfig:
     pose: Path | None = None
     sam3_summary: Path | None = None
     point_selection_summary: Path | None = None
+    part_analysis_summary: Path | None = None
     camera_name: str = "wrist"
     depth_clip_range: tuple[float, float] = (0.015, 20.0)
     subsample_factor: int = 1
@@ -216,6 +217,49 @@ def load_part_masks_from_point_selection_summary(
 
     if not specs:
         raise ValueError(f"No selected SAM3 masks found in {point_selection_summary_path}")
+    return tuple(specs)
+
+
+def load_part_masks_from_part_analysis_summary(
+    part_analysis_summary_path: Path,
+    *,
+    roles: tuple[str, ...] | None = None,
+    color_map: dict[str, tuple[int, int, int]] | None = None,
+) -> tuple[PartMaskSpec, ...]:
+    summary = json.loads(part_analysis_summary_path.read_text(encoding="utf-8"))
+    selected_groups = summary.get("selected_groups", {})
+    if not isinstance(selected_groups, dict):
+        raise ValueError(f"selected_groups must be a dict in {part_analysis_summary_path}")
+
+    selected_roles = roles or ("interaction_part", "support_part", "object")
+    specs: list[PartMaskSpec] = []
+    for role_index, role in enumerate(selected_roles):
+        selected = selected_groups.get(role)
+        if selected is None:
+            continue
+        mask_path = Path(selected["mask_npy"]).expanduser().resolve()
+        prompts = selected.get("prompts") or [role]
+        prompt_name = str(prompts[0])
+        part_name = {
+            "interaction_part": "interaction_part",
+            "support_part": "support_part",
+            "object": "object",
+        }.get(role, role)
+        if prompt_name and prompt_name != role:
+            part_name = f"{part_name}:{prompt_name}"
+        color = (color_map or {}).get(role, DEFAULT_PART_COLORS[role_index % len(DEFAULT_PART_COLORS)])
+        specs.append(
+            PartMaskSpec(
+                name=part_name,
+                mask=mask_path,
+                color_rgb=tuple(int(v) for v in color),
+                rank=None,
+                score=float(selected["sam_score"]) if "sam_score" in selected else None,
+            )
+        )
+
+    if not specs:
+        raise ValueError(f"No selected masks found in {part_analysis_summary_path}")
     return tuple(specs)
 
 
@@ -435,6 +479,9 @@ def save_reconstruction_outputs(
             "sam3_summary": str(cfg.sam3_summary) if cfg.sam3_summary else None,
             "point_selection_summary": (
                 str(cfg.point_selection_summary) if cfg.point_selection_summary else None
+            ),
+            "part_analysis_summary": (
+                str(cfg.part_analysis_summary) if cfg.part_analysis_summary else None
             ),
             "output_dir": str(cfg.output_dir),
             "masks": [

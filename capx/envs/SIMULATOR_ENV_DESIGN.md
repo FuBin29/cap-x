@@ -337,7 +337,7 @@ RLBench 的最大行为差异：
 | --- | --- | --- | --- |
 | LIBERO | `Any` fallback | `(obs, reward, terminated=False, truncated, info)` | 不直接使用传入 action；返回当前 obs/reward/truncation。常规控制经 API helper。 |
 | robosuite base | `Any` fallback | `(obs, reward, terminated=False, truncated, info)` | 不直接使用传入 action；返回当前 obs/reward/truncation。常规控制经 API helper。 |
-| RLBench | low-level action array | `(obs, reward, terminated, truncated, info)` | 会提交 action。按 adapter 约定通常是 8 维 `[7 joint velocities, 1 gripper command]`。 |
+| RLBench | low-level action array | `(obs, reward, terminated, truncated, info)` | 会提交 action。当前 adapter 统一校验 8 维，但语义由 server `--arm-action-mode` 决定：joint position、joint velocity 或 `[xyz, qx, qy, qz, qw, gripper]` pose planning。 |
 
 因此 RLBenchRemoteEnv 更接近一个真正可 step 的 Gym low-level env；LIBERO/robosuite 在 CaP-X code execution 路径里更像“供 API helper 闭环控制的 simulator state holder”。
 
@@ -350,6 +350,29 @@ RLBench 的最大行为差异：
 | RLBench | `FrankaRLBenchApi.goto_pose()` 直接调 env `move_to_pose(position, quaternion_wxyz)`，可选 `z_approach` | `obs["object_poses"]` generic dict | env `open_gripper()` / `close_gripper()` |
 
 这也是 RLBench 在 cap-x 侧呈现出的主要架构差异：它的 low-level env 已经提供 motion-planning 级别的 pose action；前两个环境的 pose-level API 是 cap-x integration 层组合视觉、IK 和 joint controller 得到的。
+
+
+### 5.7 ArtAnce stored-demo update audit
+
+当前 RLBenchRemoteEnv 比早期分析多了 ArtAnce stored-demo 路线支持：
+
+- 构造参数可带 `reset_mode`、`variation`、`episode_number`、`frame_index`、`live_demos`、`random_selection`、`image_paths`、`replay_action_key`，reset 时也可通过 `options` 覆盖。
+- host observation 新增 `rlbench_raw` 和 `rlbench_camera_configs`，用于保留 RLBench 原生 RGB-D、camera intrinsics/extrinsics、low-dim state 和 `gripper_pose=[x,y,z,qx,qy,qz,qw]`。
+- host observation 新增与 LIBERO/robosuite 更接近的 shortcuts：`robot_joint_pos=[7 joints, gripper]`、`robot_cartesian_pos=[xyz, quat_wxyz, gripper]`。
+- host video capture 现在和 robosuite/LIBERO 一样维护 `_frame_buffer` 与 `_wrist_frame_buffer`，`enable_video_capture(..., wrist_camera=True)` 后可通过 `get_wrist_video_frames()` 取 wrist frames。
+- low-level 新增 `move_to_pose_xyzw()`，API 层可用 `goto_pose_xyzw()` 明确调用 RLBench 原生 XYZW pose；控制语义仍是 ArtAnce local path helper，而不是原生 pose-step。
+- server 默认 `--arm-action-mode joint_position` 以对齐 ArtAnce local 的 `joint_position_action` replay，同时也支持 `joint_velocity` 和 `ee_pose_via_planning`；observation/info 会带 `step_action_spec` 和 `pose_helper_spec`。
+- server 默认开启 path-step 视频记录，输出到 `/home/fubin/projects/artance/cap-x/outputs/rlbench_path_videos`，episode 目录名含日期、task、episode 和 frame；manifest 记录 target pose、planner、success/reward 和 error_context。
+- `move_to_pose()` 现在参考 RLBench 官方 pose-planning action 做 unit-quaternion 与 workspace 校验，并固定使用 RRTConnect planner 参数。
+
+和 LIBERO/robosuite 相比仍然存在的本质差异：
+
+- RLBench host env 不是本地 simulator wrapper，而是 HTTP proxy。真正的 `Environment`、action mode、dataset_root、camera render mode 都在 server 进程中决定；host YAML 不能单独保证 server 启动配置正确。
+- RLBench reset 可以恢复 stored demo 的中间 frame，这和 LIBERO seed/init-state、robosuite sampler reset 都不同；它更像“dataset episode state restore + replay”。
+- RLBench low-level `move_to_pose()` 是 backend path-planning primitive；LIBERO/robosuite 的 `goto_pose()` 多数是在 integration API 中解 IK 后走 joint controller。
+- RLBench control helper 返回 structured result，适合记录 motion-planning failure；LIBERO/robosuite helper 多数是 `None` return。
+- RLBench `/step` 是真实 remote action dispatch，且 action 语义取决于 server arm action mode；LIBERO/robosuite 在 code execution 路径里的 `step()` 基本是 fallback。
+- RLBench adapter 现在默认在 server 端记录 path 内部每个 `scene.step()` 的诊断视频，并把文件路径写回 `path_video` / `path_video_manifest`；host video buffer 仍是 trial-level frame buffer，不负责传输 path 内所有图像。
 
 ## 6. 新增环境时的建议
 

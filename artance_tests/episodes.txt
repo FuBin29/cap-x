@@ -9,7 +9,7 @@
 /home/fubin/projects/artance/RLBench/data/RLBench-data/close_microwave/variation0/episodes/episode4/wrist_rgb/42.png
 /home/fubin/projects/artance/RLBench/data/RLBench-data/push_button/variation0/episodes/episode2/wrist_rgb/36.png
 /home/fubin/projects/artance/RLBench/data/RLBench-data/push_button/variation2/episodes/episode2/wrist_rgb/32.png
-/home/fubin/projects/artance/RLBench/data/RLBench-data/push_button/variation5/episodes/episode2/wrist_rgb/0.png
+/home/fubin/projects/artance/RLBench/data/RLBench-data/push_button/variation4/episodes/episode2/wrist_rgb/0.png
 /home/fubin/projects/artance/RLBench/data/RLBench-data/toilet_seat_down/variation0/episodes/episode1/wrist_rgb/0.png
 /home/fubin/projects/artance/RLBench/data/RLBench-data/toilet_seat_down/variation0/episodes/episode2/wrist_rgb/15.png
 /home/fubin/projects/artance/RLBench/data/RLBench-data/toilet_seat_down/variation0/episodes/episode4/wrist_rgb/6.png

@@ -45,6 +45,14 @@ class RLBenchRemoteEnv(BaseEnv):
         enable_render: bool = False,
         viser_debug: bool = False,
         timeout: float = 120.0,
+        reset_mode: str | None = None,
+        variation: int | None = None,
+        episode_number: int | None = None,
+        frame_index: int | None = None,
+        live_demos: bool = False,
+        random_selection: bool = False,
+        image_paths: bool = False,
+        replay_action_key: str = "joint_position_action",
     ) -> None:
         super().__init__()
         self.server_url = server_url.rstrip("/")
@@ -54,6 +62,14 @@ class RLBenchRemoteEnv(BaseEnv):
         self.enable_render = enable_render
         self.viser_debug = viser_debug
         self.timeout = timeout
+        self.reset_mode = reset_mode
+        self.variation = variation
+        self.episode_number = episode_number
+        self.frame_index = frame_index
+        self.live_demos = live_demos
+        self.random_selection = random_selection
+        self.image_paths = image_paths
+        self.replay_action_key = replay_action_key
 
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         self._step_count = 0
@@ -68,6 +84,8 @@ class RLBenchRemoteEnv(BaseEnv):
 
         self._record_frames = False
         self._frame_buffer: list[np.ndarray] = []
+        self._wrist_frame_buffer: list[np.ndarray] = []
+        self._record_wrist_camera = False
 
     # ----------------------------- HTTP helpers -----------------------------
 
@@ -148,6 +166,25 @@ class RLBenchRemoteEnv(BaseEnv):
             arr = arr.reshape(shape)
         return arr
 
+    def _decode_nested_arrays(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            if {"encoding", "dtype", "shape", "data"}.issubset(value):
+                return self._decode_array(value)
+            return {key: self._decode_nested_arrays(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._decode_nested_arrays(item) for item in value]
+        return value
+
+    def _convert_camera_configs(self, value: Any) -> dict[str, Any]:
+        configs: dict[str, Any] = {}
+        for name, config in (value or {}).items():
+            config = config or {}
+            configs[name] = {
+                "intrinsics": self._as_array(config.get("intrinsics", np.eye(3)), (3, 3)),
+                "extrinsics": self._as_array(config.get("extrinsics", np.eye(4)), (4, 4)),
+            }
+        return configs
+
     def _update_context_from_result(self, result: dict[str, Any]) -> None:
         if "episode_id" in result:
             self._episode_id = int(result["episode_id"])
@@ -208,19 +245,40 @@ class RLBenchRemoteEnv(BaseEnv):
         gripper_pose = remote_obs.get("gripper_pose") or {}
         ee_pos = self._as_array(gripper_pose.get("position", [0.0, 0.0, 0.0]), (3,))
         ee_quat = self._as_array(gripper_pose.get("quaternion_wxyz", [1.0, 0.0, 0.0, 0.0]), (4,))
+        gripper_pose_xyzw = gripper_pose.get("quaternion_xyzw")
+        if gripper_pose_xyzw is not None:
+            gripper_pose_xyzw = np.concatenate([ee_pos, self._as_array(gripper_pose_xyzw, (4,))])
         gripper_open = float(remote_obs.get("gripper_open", 1.0))
+        joint_pos = self._as_array(remote_obs.get("joint_positions", np.zeros(7)), (7,))
+        joint_vel = self._as_array(remote_obs.get("joint_velocities", np.zeros(7)), (7,))
+        robot_joint_pos = np.concatenate([joint_pos, np.array([gripper_open], dtype=np.float64)])
+        robot_cartesian_pos = np.concatenate([ee_pos, ee_quat, np.array([gripper_open], dtype=np.float64)])
 
         obs: dict[str, Any] = {
-            "robot0_joint_pos": self._as_array(remote_obs.get("joint_positions", np.zeros(7)), (7,)),
-            "robot0_joint_vel": self._as_array(remote_obs.get("joint_velocities", np.zeros(7)), (7,)),
+            "robot0_joint_pos": joint_pos,
+            "robot0_joint_vel": joint_vel,
             "robot0_gripper_qpos": np.array([gripper_open], dtype=np.float64),
             "robot0_eef_pos": ee_pos,
             "robot0_eef_quat": ee_quat,
+            "robot_joint_pos": robot_joint_pos,
+            "robot_cartesian_pos": robot_cartesian_pos,
+            "gripper_pose_xyzw": gripper_pose_xyzw,
             "object_poses": object_poses,
             "task_descriptions": list(remote_obs.get("task_descriptions") or []),
             "task_name": remote_obs.get("task_name", self.task_name),
             "episode_id": remote_obs.get("episode_id"),
             "action_sequence_id": remote_obs.get("action_sequence_id"),
+            "reset_mode": remote_obs.get("reset_mode"),
+            "variation": remote_obs.get("variation"),
+            "episode_number": remote_obs.get("episode_number"),
+            "frame_index": remote_obs.get("frame_index"),
+            "replay": dict(remote_obs.get("replay") or {}),
+            "path_video_dir": remote_obs.get("path_video_dir"),
+            "path_video_manifest": list(remote_obs.get("path_video_manifest") or []),
+            "step_action_spec": dict(remote_obs.get("step_action_spec") or {}),
+            "pose_helper_spec": dict(remote_obs.get("pose_helper_spec") or {}),
+            "rlbench_raw": self._decode_nested_arrays(remote_obs.get("rlbench_raw") or {}),
+            "rlbench_camera_configs": self._convert_camera_configs(remote_obs.get("rlbench_camera_configs")),
             "task_low_dim_state": self._as_array(remote_obs.get("task_low_dim_state", [])),
             "last_reward": float(remote_obs.get("last_reward", self._last_reward)),
             "last_terminate": bool(remote_obs.get("last_terminate", False)),
@@ -253,6 +311,12 @@ class RLBenchRemoteEnv(BaseEnv):
             "episode_id": result.get("episode_id", self._episode_id),
             "action_sequence_id": result.get("action_sequence_id", self._action_sequence_id),
             "request_id": result.get("request_id"),
+            "path_video": result.get("path_video"),
+            "error_context": result.get("error_context"),
+            "traceback": result.get("traceback"),
+            "target_pose_wxyz": result.get("target_pose_wxyz"),
+            "target_pose_xyzw": result.get("target_pose_xyzw"),
+            "planner": result.get("planner"),
         }
         self._last_control_result = control_result
         if not control_result["ok"]:
@@ -288,12 +352,39 @@ class RLBenchRemoteEnv(BaseEnv):
         options = options or {}
         requested_task_name = str(options.get("task_name", self.task_name))
         payload: dict[str, Any] = {"task_name": requested_task_name}
-        if "variation" in options:
-            payload["variation"] = options["variation"]
-        elif seed is not None:
+        configured_defaults = {
+            "reset_mode": self.reset_mode,
+            "variation": self.variation,
+            "episode_number": self.episode_number,
+            "frame_index": self.frame_index,
+            "live_demos": self.live_demos,
+            "random_selection": self.random_selection,
+            "image_paths": self.image_paths,
+            "replay_action_key": self.replay_action_key,
+        }
+        for key, value in configured_defaults.items():
+            if value is not None:
+                payload[key] = value
+        for key in (
+            "reset_mode",
+            "variation",
+            "episode_number",
+            "frame_index",
+            "frame",
+            "attempts",
+            "live_demos",
+            "random_selection",
+            "image_paths",
+            "replay_action_key",
+        ):
+            if key in options:
+                payload[key] = options[key]
+        if "variation" not in payload and seed is not None:
             payload["variation"] = int(seed)
-        if "attempts" in options:
-            payload["attempts"] = int(options["attempts"])
+        if "frame" in payload and "frame_index" not in payload:
+            payload["frame_index"] = payload.pop("frame")
+        if "attempts" in payload:
+            payload["attempts"] = int(payload["attempts"])
 
         result = self._post("/reset", payload)
         self._step_count = 0
@@ -310,6 +401,12 @@ class RLBenchRemoteEnv(BaseEnv):
             "task_name": result.get("task_name", self.task_name),
             "task_descriptions": result.get("descriptions", []),
             "action_sequence_id": result.get("action_sequence_id"),
+            "reset_mode": result.get("reset_mode"),
+            "variation": result.get("variation"),
+            "episode_number": result.get("episode_number"),
+            "frame_index": result.get("frame_index"),
+            "replay": result.get("replay", {}),
+            "path_video_dir": result.get("path_video_dir"),
         }
         return obs, info
 
@@ -328,6 +425,7 @@ class RLBenchRemoteEnv(BaseEnv):
             "success": success,
             "episode_id": result.get("episode_id", self._episode_id),
             "action_sequence_id": result.get("action_sequence_id", self._action_sequence_id),
+            "step_action_spec": result.get("step_action_spec"),
         }
         return obs, self._last_reward, terminated, truncated, info
 
@@ -370,6 +468,7 @@ class RLBenchRemoteEnv(BaseEnv):
         quaternion_wxyz: np.ndarray,
         *,
         ignore_collisions: bool = True,
+        max_path_steps: int = 600,
     ) -> dict[str, Any]:
         result = self._post(
             "/move_to_pose",
@@ -377,6 +476,7 @@ class RLBenchRemoteEnv(BaseEnv):
                 "position": np.asarray(position, dtype=float).reshape(3).tolist(),
                 "quaternion_wxyz": np.asarray(quaternion_wxyz, dtype=float).reshape(4).tolist(),
                 "ignore_collisions": bool(ignore_collisions),
+                "steps": int(max_path_steps),
             },
         )
         self._sim_step_count += int(result.get("steps", 0))
@@ -385,6 +485,28 @@ class RLBenchRemoteEnv(BaseEnv):
         if "observation" in result:
             self._set_remote_observation(result["observation"])
         return control_result
+
+    def move_to_pose_xyzw(
+        self,
+        pose_xyzw: np.ndarray,
+        *,
+        gripper: float | None = None,
+        ignore_collisions: bool = True,
+        max_path_steps: int = 600,
+    ) -> dict[str, Any]:
+        pose = np.asarray(pose_xyzw, dtype=np.float64).reshape(7)
+        quat_xyzw = pose[3:7]
+        quat_wxyz = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]], dtype=np.float64)
+        result = self.move_to_pose(
+            pose[:3],
+            quat_wxyz,
+            ignore_collisions=ignore_collisions,
+            max_path_steps=max_path_steps,
+        )
+        if gripper is not None and result.get("ok", True):
+            gripper_result = self._set_gripper(float(gripper))
+            result = {**result, "gripper_result": gripper_result}
+        return result
 
     def _set_gripper(self, fraction: float) -> dict[str, Any]:
         path = "/open_gripper" if float(fraction) > 0.5 else "/close_gripper"
@@ -414,15 +536,21 @@ class RLBenchRemoteEnv(BaseEnv):
         wrist_camera: bool = False,
     ) -> None:
         self._record_frames = enabled
+        self._record_wrist_camera = wrist_camera
         if clear:
             self._frame_buffer.clear()
+            self._wrist_frame_buffer.clear()
         if enabled and self._last_obs is not None:
             self._record_frame()
 
     def _record_frame(self) -> None:
-        if self._last_obs is None:
+        if not self._record_frames or self._last_obs is None:
             return
         self._frame_buffer.append(self._last_obs["robot0_robotview"]["images"]["rgb"].copy())
+        if self._record_wrist_camera and "robot0_eye_in_hand" in self._last_obs:
+            self._wrist_frame_buffer.append(
+                self._last_obs["robot0_eye_in_hand"]["images"]["rgb"].copy()
+            )
 
     def get_video_frames(self, *, clear: bool = False) -> list[np.ndarray]:
         frames = [frame.copy() for frame in self._frame_buffer]
@@ -437,10 +565,13 @@ class RLBenchRemoteEnv(BaseEnv):
         return [frame.copy() for frame in self._frame_buffer[start:end]]
 
     def get_wrist_video_frames(self, *, clear: bool = False) -> list[np.ndarray]:
-        return []
+        frames = [frame.copy() for frame in self._wrist_frame_buffer]
+        if clear:
+            self._wrist_frame_buffer.clear()
+        return frames
 
     def get_wrist_video_frames_range(self, start: int, end: int) -> list[np.ndarray]:
-        return []
+        return [frame.copy() for frame in self._wrist_frame_buffer[start:end]]
 
 
 __all__ = ["RLBenchRemoteEnv", "RLBenchRemoteError"]

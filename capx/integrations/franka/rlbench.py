@@ -9,7 +9,7 @@ from capx.integrations.base_api import ApiBase
 
 
 class FrankaRLBenchApi(ApiBase):
-    """Control helpers for Franka in an RLBench remote environment."""
+    """Control helpers for a Franka arm in RLBench."""
 
     def __init__(self, env: BaseEnv) -> None:
         super().__init__(env)
@@ -17,38 +17,94 @@ class FrankaRLBenchApi(ApiBase):
     def functions(self) -> dict[str, Any]:
         return {
             "get_observation": self.get_observation,
+            "get_rlbench_observation": self.get_rlbench_observation,
+            "get_camera_observations": self.get_camera_observations,
+            "get_gripper_pose_xyzw": self.get_gripper_pose_xyzw,
             "get_object_pose": self.get_object_pose,
             "goto_pose": self.goto_pose,
+            "goto_pose_xyzw": self.goto_pose_xyzw,
             "move_to_joints": self.move_to_joints,
             "open_gripper": self.open_gripper,
             "close_gripper": self.close_gripper,
         }
 
     def get_observation(self) -> dict[str, Any]:
-        """Get the latest RLBench observation.
+        """Get the latest observation.
 
         Returns:
-            A dictionary containing robot state, camera observations, task text, and object poses.
-            The dictionary contains the following keys:
-            - obs["robot0_joint_pos"]: (7,) Franka joint positions in radians.
-            - obs["robot0_joint_vel"]: (7,) Franka joint velocities.
-            - obs["robot0_gripper_qpos"]: (1,) gripper open amount, 1.0 open and 0.0 closed.
-            - obs["robot0_eef_pos"]: (3,) end-effector XYZ in the RLBench world frame.
-            - obs["robot0_eef_quat"]: (4,) end-effector quaternion in WXYZ order.
-            - obs["robot0_robotview"]["images"]["rgb"]: front camera RGB image, uint8.
-            - obs["robot0_robotview"]["images"]["depth"]: front camera depth image, float32.
-            - obs["robot0_robotview"]["intrinsics"]: front camera intrinsic matrix, shape (3, 3).
-            - obs["robot0_robotview"]["pose_mat"]: front camera extrinsic matrix, shape (4, 4).
-            - obs["robot0_eye_in_hand"]: wrist camera observation when the adapter exposes wrist camera.
-            - obs["object_poses"]: object poses as [x, y, z, qw, qx, qy, qz].
-            - obs["target_pose"]: target pose alias when the current task exposes a target object.
-            - obs["last_action_result"]: most recent control helper result when available.
-
-            For reach-only motions, prefer using obs["robot0_eef_quat"] as the target
-            gripper orientation. Object quaternions from get_object_pose() describe
-            object orientation and are usually not valid gripper target orientations.
+            A dictionary with robot state, cameras, task text, object poses, and
+            the most recent action result. Common keys include:
+            ``robot0_joint_pos`` (7,), ``robot0_eef_pos`` (3,),
+            ``robot0_eef_quat`` (4, WXYZ), ``gripper_pose_xyzw``
+            (7, [x, y, z, qx, qy, qz, qw]), ``object_poses``,
+            ``robot0_robotview``, and ``robot0_eye_in_hand`` when available.
         """
         return self._env.get_observation()
+
+    def get_rlbench_observation(self) -> dict[str, Any]:
+        """Get raw RLBench-style observation fields.
+
+        Returns:
+            A dictionary with keys such as ``front_rgb``, ``front_depth``,
+            ``wrist_rgb``, ``wrist_depth``, ``joint_positions``,
+            ``gripper_open``, and ``gripper_pose``. ``gripper_pose`` is
+            ``[x, y, z, qx, qy, qz, qw]`` in XYZW quaternion order.
+        """
+        return dict(self._env.get_observation().get("rlbench_raw", {}))
+
+    def get_camera_observations(
+        self,
+        camera_order: tuple[str, ...] = ("overhead", "left_shoulder", "right_shoulder", "wrist", "front"),
+    ) -> dict[str, dict[str, Any]]:
+        """Get RGB-D images and camera matrices by camera name.
+
+        Args:
+            camera_order: Camera names to return. Typical names are ``front``,
+                ``wrist``, ``left_shoulder``, ``right_shoulder``, and ``overhead``.
+
+        Returns:
+            A dictionary keyed by camera name. Each value may contain ``rgb``
+            (H,W,3 uint8), ``depth`` (H,W float32 meters), ``intrinsics`` (3,3),
+            and ``extrinsics`` (4,4).
+        """
+        obs = self._env.get_observation()
+        raw = obs.get("rlbench_raw", {})
+        configs = obs.get("rlbench_camera_configs", {})
+        result: dict[str, dict[str, Any]] = {}
+        for camera in camera_order:
+            config = configs.get(f"{camera}_camera", {})
+            if f"{camera}_rgb" not in raw and camera not in obs:
+                continue
+            capx_camera = obs.get(camera, {})
+            if camera == "front":
+                capx_camera = obs.get("robot0_robotview", capx_camera)
+            elif camera == "wrist":
+                capx_camera = obs.get("robot0_eye_in_hand", capx_camera)
+            result[camera] = {
+                "rgb": raw.get(f"{camera}_rgb", capx_camera.get("images", {}).get("rgb")),
+                "depth": raw.get(f"{camera}_depth", capx_camera.get("images", {}).get("depth")),
+                "intrinsics": config.get("intrinsics", capx_camera.get("intrinsics")),
+                "extrinsics": config.get("extrinsics", capx_camera.get("pose_mat")),
+            }
+        return result
+
+    def get_gripper_pose_xyzw(self) -> np.ndarray:
+        """Get the current RLBench gripper pose in native XYZW quaternion order.
+
+        Returns:
+            A numpy array of shape (7,) containing ``[x, y, z, qx, qy, qz, qw]``
+            in the RLBench world frame. Use this with ``goto_pose_xyzw`` when you
+            want to preserve the current wrist orientation while changing XYZ.
+        """
+        obs = self._env.get_observation()
+        pose = obs.get("rlbench_raw", {}).get("gripper_pose")
+        if pose is None:
+            pose = obs.get("gripper_pose_xyzw")
+        if pose is None:
+            pos = np.asarray(obs["robot0_eef_pos"], dtype=np.float64).reshape(3)
+            quat_wxyz = np.asarray(obs["robot0_eef_quat"], dtype=np.float64).reshape(4)
+            pose = np.concatenate([pos, quat_wxyz[[1, 2, 3, 0]]])
+        return np.asarray(pose, dtype=np.float64).reshape(7)
 
     def get_object_pose(self, object_name: str) -> tuple[np.ndarray, np.ndarray]:
         """Get a privileged object pose from RLBench.
@@ -74,21 +130,18 @@ class FrankaRLBenchApi(ApiBase):
         quaternion_wxyz: np.ndarray,
         z_approach: float = 0.0,
     ) -> dict[str, Any]:
-        """Move the end effector to a target pose through the RLBench adapter.
+        """Move the end effector to a target pose.
 
         Args:
-            position: (3,) XYZ in meters, in the RLBench world frame.
-            quaternion_wxyz: (4,) target gripper quaternion in WXYZ order.
-                For reaching a target object, use the current end-effector quaternion
-                from obs["robot0_eef_quat"] unless you intentionally need to rotate
-                the wrist. Do not pass an object's quaternion as the gripper target
-                orientation unless that is explicitly intended.
-            z_approach: Optional world-frame positive-Z approach distance in meters.
-                If nonzero, first moves to position + [0, 0, z_approach], then to position.
+            position: (3,) target XYZ position in meters, in the world frame.
+            quaternion_wxyz: (4,) target end-effector quaternion in WXYZ order.
+            z_approach: Optional positive-Z approach distance in meters. If
+                nonzero, first moves to ``position + [0, 0, z_approach]``.
 
         Returns:
-            A dictionary with ok=True on success. If RLBench path planning fails,
-            returns ok=False with an error string instead of raising a sandbox error.
+            A result dictionary. On success, ``result["ok"]`` is True. On
+            failure, ``result["ok"]`` is False and includes ``error_type`` and
+            ``error``.
         """
         pos = np.asarray(position, dtype=np.float64).reshape(3)
         quat = np.asarray(quaternion_wxyz, dtype=np.float64).reshape(4)
@@ -99,6 +152,35 @@ class FrankaRLBenchApi(ApiBase):
             if not result.get("ok", True):
                 return result
         return self._env.move_to_pose(pos, quat)
+
+    def goto_pose_xyzw(
+        self,
+        pose_xyzw: np.ndarray,
+        gripper: float | None = None,
+        ignore_collisions: bool = True,
+        max_path_steps: int = 600,
+    ) -> dict[str, Any]:
+        """Move the end effector to a target pose in XYZW quaternion order.
+
+        Args:
+            pose_xyzw: (7,) target pose ``[x, y, z, qx, qy, qz, qw]`` in the
+                world frame.
+            gripper: Optional gripper command after the arm move. Use 1.0 to
+                open and 0.0 to close. If None, only the arm pose is moved.
+            ignore_collisions: Whether the planner ignores collisions.
+            max_path_steps: Maximum path stepping iterations before timeout.
+
+        Returns:
+            A result dictionary. On success, ``result["ok"]`` is True. On
+            failure, ``result["ok"]`` is False and includes ``error_type`` and
+            ``error``.
+        """
+        return self._env.move_to_pose_xyzw(
+            np.asarray(pose_xyzw, dtype=np.float64).reshape(7),
+            gripper=gripper,
+            ignore_collisions=ignore_collisions,
+            max_path_steps=max_path_steps,
+        )
 
     def move_to_joints(self, joints: np.ndarray) -> None:
         """Move the Franka arm to target joint positions.
@@ -112,25 +194,11 @@ class FrankaRLBenchApi(ApiBase):
         self._env.move_to_joints_blocking(np.asarray(joints, dtype=np.float64).reshape(7))
 
     def open_gripper(self) -> None:
-        """Open the gripper fully.
-
-        Args:
-            None
-
-        Returns:
-            None
-        """
+        """Open the gripper fully."""
         self._env.open_gripper()
 
     def close_gripper(self) -> None:
-        """Close the gripper fully.
-
-        Args:
-            None
-
-        Returns:
-            None
-        """
+        """Close the gripper fully."""
         self._env.close_gripper()
 
 

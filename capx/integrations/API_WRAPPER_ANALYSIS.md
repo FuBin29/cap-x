@@ -314,9 +314,13 @@ LIBERO reduced 版与 Robosuite reduced 版类似，但增加了多视角点云�
 
 | Function | Return | 行为 |
 | --- | --- | --- |
-| `get_observation()` | `dict[str, Any]` | 直接返回 remote env 标准化 observation。 |
+| `get_observation()` | `dict[str, Any]` | 返回 remote env 标准化 observation，包括 cap-x keys 和 RLBench compatibility keys。 |
+| `get_rlbench_observation()` | `dict[str, Any]` | 返回 RLBench-style raw fields，例如 `front_rgb`、`wrist_depth`、`gripper_pose=[x,y,z,qx,qy,qz,qw]`。 |
+| `get_camera_observations(camera_order=...)` | `dict[str, dict]` | 按 RLBench camera 名返回 RGB-D、intrinsics、extrinsics。 |
+| `get_gripper_pose_xyzw()` | `np.ndarray(7,)` | 返回 RLBench 原生 `[x,y,z,qx,qy,qz,qw]`。 |
 | `get_object_pose(object_name)` | `(position, quaternion_wxyz)` | 从 `obs["object_poses"]` 查找 object pose。 |
-| `goto_pose(position, quaternion_wxyz, z_approach=0.0)` | `dict[str, Any]` | 直接调用 env `move_to_pose()`；approach 是 world +Z。 |
+| `goto_pose(position, quaternion_wxyz, z_approach=0.0)` | `dict[str, Any]` | ArtAnce local path helper：env `move_to_pose()` -> server `arm.get_path()` -> `path.step(); scene.step()`；quaternion 是 cap-x WXYZ，approach 是 world +Z。 |
+| `goto_pose_xyzw(pose_xyzw, gripper=None, ...)` | `dict[str, Any]` | 同一 ArtAnce local path helper；pose 是 RLBench/PyRep XYZW，可选随后执行 `open_gripper()` / `close_gripper()` helper。 |
 | `move_to_joints(joints)` | `None` | 调 env `move_to_joints_blocking()`。 |
 | `open_gripper()` | `None` | 调 env `open_gripper()`。 |
 | `close_gripper()` | `None` | 调 env `close_gripper()`。 |
@@ -325,8 +329,10 @@ LIBERO reduced 版与 Robosuite reduced 版类似，但增加了多视角点云�
 
 - 不初始化 SAM、OWL-ViT、Molmo、GraspNet 或 PyRoKi。
 - 不在 API 层做 IK；RLBench remote env/adapter 已经提供 `move_to_pose()`。
-- `goto_pose()` 返回 structured result，motion planning 失败通常以 `{"ok": false, ...}` 表达，而不是直接 raise。
+- `goto_pose()` / `goto_pose_xyzw()` 返回 structured result，pose validation 或 motion planning 失败通常以 `{"ok": false, "error_type": ..., "error_context": ..., "traceback": ...}` 表达，而不是直接 raise。
 - `get_object_pose()` 是 privileged style generic lookup，依赖 adapter 暴露 `object_poses`。
+- API 同时暴露 WXYZ 和 XYZW 两套 pose helper；这是为了保留 cap-x 约定，同时适配 RLBench/ArtAnce raw observation，不应混用。
+- API 层当前没有单独暴露 `step_end_effector_pose()`；server 可通过 `--arm-action-mode ee_pose_via_planning` 让 `/step` 使用 R2C/RLBench 原生 pose-step，但默认 code-agent API 明确采用 ArtAnce local path helper，不把 `goto_pose_xyzw()` 描述为原生 pose-step。
 
 这符合 RLBench Docker 隔离设计：host 侧不 import `rlbench`/`pyrep`，只通过 HTTP adapter 调用远程 simulator。
 

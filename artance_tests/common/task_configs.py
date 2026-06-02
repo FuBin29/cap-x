@@ -15,12 +15,24 @@ class PrismaticJointMotionSpec:
 
 
 @dataclass(frozen=True)
+class ImplicitDoorRemoteRotationSpec:
+    door_part: str
+    handle_part: str
+    door_opening_type: str = "side"
+    hinge_axis_orientation: str = "vertical"
+    closing_direction_sign: float = -1.0
+    rotation_degrees: float = 40.0
+
+
+@dataclass(frozen=True)
 class TaskModuleConfig:
     task: str
     display_name: str
     contact_prompt: VlmContactPointPromptSpec
     sam3_prompts: tuple[str, ...]
+    contact_grasp_prompt: str | None = None
     prismatic_motion: PrismaticJointMotionSpec | None = None
+    implicit_door_remote_rotation: ImplicitDoorRemoteRotationSpec | None = None
 
 
 TASK_CONFIGS: dict[str, TaskModuleConfig] = {
@@ -66,6 +78,14 @@ TASK_CONFIGS: dict[str, TaskModuleConfig] = {
             user_instruction="Find the single best contact point for the close fridge task.",
         ),
         sam3_prompts=("fridge door handle", "fridge door"),
+        implicit_door_remote_rotation=ImplicitDoorRemoteRotationSpec(
+            door_part="fridge door",
+            handle_part="fridge door handle",
+            door_opening_type="side",
+            hinge_axis_orientation="vertical",
+            closing_direction_sign=-1.0,
+            rotation_degrees=40.0,
+        ),
     ),
     "close_microwave": TaskModuleConfig(
         task="close_microwave",
@@ -84,6 +104,14 @@ TASK_CONFIGS: dict[str, TaskModuleConfig] = {
             user_instruction="Find the single best contact point for the close microwave task.",
         ),
         sam3_prompts=("microwave door handle", "door"),
+        implicit_door_remote_rotation=ImplicitDoorRemoteRotationSpec(
+            door_part="door",
+            handle_part="microwave door handle",
+            door_opening_type="side",
+            hinge_axis_orientation="vertical",
+            closing_direction_sign=-1.0,
+            rotation_degrees=40.0,
+        ),
     ),
     "push_button": TaskModuleConfig(
         task="push_button",
@@ -124,7 +152,7 @@ TASK_CONFIGS: dict[str, TaskModuleConfig] = {
             ),
             user_instruction="Find the single best contact point for the toilet lid down task.",
         ),
-        sam3_prompts=("toilet lid", "toilet"),
+        sam3_prompts=("toilet lid", "toilet seat"),
     ),
 }
 

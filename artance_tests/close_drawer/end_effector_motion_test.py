@@ -8,9 +8,9 @@ ARTANCE_TESTS_ROOT = Path(__file__).resolve().parents[1]
 if str(ARTANCE_TESTS_ROOT) not in sys.path:
     sys.path.insert(0, str(ARTANCE_TESTS_ROOT))
 
-from common.prismatic_joint_motion import (
+from common.end_effector_motion import (
     PrismaticJointMotionConfig,
-    run_prismatic_joint_motion_target,
+    run_prismatic_end_effector_motion_target,
 )
 from common.task_configs import get_task_config
 
@@ -112,23 +112,14 @@ def parse_args() -> PrismaticJointMotionConfig:
 
 def main() -> None:
     cfg = parse_args()
-    target, summary_path = run_prismatic_joint_motion_target(cfg)
+    target, summary_path = run_prismatic_end_effector_motion_target(TASK, cfg)
     print(f"task: {TASK}")
-    print(f"input frame: {target.input_frame}")
-    print(f"contact position (world): {target.contact_position}")
-    print(f"normal (world): {target.normal}")
-    print(f"motion direction (world): {target.motion_direction}")
-    print(f"approach position (world): {target.approach_position}")
-    print(f"target position (world): {target.target_position}")
-    print(f"final position (world): {target.final_position}")
-    print(f"quaternion_wxyz: {target.quaternion_wxyz}")
+    print(f"joint type: {target.joint_type}")
+    print(f"analysis path: {target.analysis_path}")
+    for step in target.motion_steps:
+        print(f"{step.name} position (world): {step.position}")
+        print(f"{step.name} quaternion_wxyz: {step.quaternion_wxyz}")
     print(f"close gripper before motion: {target.close_gripper_before_motion}")
-    if target.distance_current_to_approach is not None:
-        print(f"distance current -> approach: {target.distance_current_to_approach:.4f} m")
-    if target.distance_current_to_target is not None:
-        print(f"distance current -> target: {target.distance_current_to_target:.4f} m")
-    if target.distance_current_to_final is not None:
-        print(f"distance current -> final: {target.distance_current_to_final:.4f} m")
     print(f"Saved summary: {summary_path}")
 
 

@@ -229,7 +229,7 @@ R2C 的 `task.step()` action 语义和 cap-x 当前 `/step` 语义不同：
 如果目标是支持 R2C 风格策略代码直接迁移，server 必须支持 EE pose action mode。一种做法是启动参数增加：
 
 ```text
---arm-action-mode joint_velocity | ee_pose_via_planning
+--arm-action-mode joint_position | joint_velocity | ee_pose_via_planning
 ```
 
 当为 `ee_pose_via_planning` 时：
@@ -287,7 +287,7 @@ R2C 对象理解主要来自 RGB-D 分割点云，不强依赖 privileged object
 1. server 增加 `dataset_root` 和 demo reset 支持，并让 `RLBenchRemoteEnv.reset(options=...)` 透传这些字段。
 2. server 默认/文档化支持五相机 640 RGB-D，尤其补上 `overhead`；确认 intrinsics/extrinsics 来自当前 obs misc。
 3. Host observation 增加 `rlbench_raw` 和 `rlbench_camera_configs` 兼容字段，保留 cap-x 原有 observation schema。
-4. 增加 EE pose step 能力。优先新增 `/step_ee_pose`，避免改变当前 `/step` joint velocity 语义。
+4. 增加 EE pose step 能力。当前实现没有新增 route，而是在现有 `/step` 上按 `--arm-action-mode` 分配 joint position、joint velocity 或 EE pose planning 语义。
 5. `FrankaRLBenchApi` 增加面向视觉/R2C 的 helper，并在 docstring 里明确坐标系、深度单位和四元数顺序。
 6. 为 `StackBlocks` 这类 R2C 主流程任务加一个 smoke YAML：server 用 demo reset，client reset 后检查五相机 shape、camera matrices、gripper pose，再执行一个小的 EE pose no-op 或 z 方向微动。
 
@@ -296,3 +296,27 @@ R2C 对象理解主要来自 RGB-D 分割点云，不强依赖 privileged object
 - 不建议把 R2C 的 RLBench/PyRep 直接 import 到 Host 侧 cap-x。当前 Docker 隔离边界仍然是正确的。
 - 不建议为了兼容 R2C 直接把 cap-x 全局四元数约定从 WXYZ 改成 XYZW。更稳妥的是新增 raw/RLBench 命名字段，在 API 名和 docstring 里明确。
 - 不建议把 R2C 的分割、VLM、LLM planner 一起塞进 `RLBenchRemoteEnv`。env wrapper 只需要提供 reset、observation、控制和 success/reward 的清晰边界。
+
+
+## 2026-05-31 更新后的实现状态
+
+本节记录当前 cap-x RLBench adapter 已落地的能力，以及它和 R2C / ArtAnce local 路线仍然不一致的地方。
+
+已落地：
+
+- server 启动参数已支持 `--dataset-root`、`--arm-action-mode joint_position|joint_velocity|ee_pose_via_planning`、`--render-mode`、可配置 camera list 和默认开启的 path-step 视频记录。
+- `/reset` 已支持 `reset_mode=demo` / `episode` / `reset_to_demo`，并透传 `variation`、`episode_number`、`frame_index`、`live_demos`、`random_selection`、`image_paths`、`replay_action_key`。
+- demo reset 现在可按 `joint_position_action` replay 到指定 frame；如果 server 未以 `joint_position` action mode 启动，会返回 409，避免 action 语义错配。
+- observation 已同时提供 cap-x schema 和 R2C/ArtAnce 兼容 schema：`rlbench_raw`、`rlbench_camera_configs`、原生 XYZW `gripper_pose`、五相机 RGB-D payload。
+- host `RLBenchRemoteEnv` 已解码 raw numpy arrays，并补齐 `robot_joint_pos`、`robot_cartesian_pos`、`gripper_pose_xyzw`。
+- `FrankaRLBenchApi` 已新增 `get_rlbench_observation()`、`get_camera_observations()`、`get_gripper_pose_xyzw()`、`goto_pose_xyzw()`。
+
+仍未完全等价：
+
+- R2C 的核心控制是 `EndEffectorPoseViaPlanning().action()` 下的 `task.step([x,y,z,qx,qy,qz,qw,gripper])`；现在可通过 `--arm-action-mode ee_pose_via_planning` 让 `/step` 使用同一 action mode。
+- `goto_pose_xyzw()` 仍不是 R2C 原生 pose-step；它调用 adapter 的 PyRep `arm.get_path()` helper，适配 ArtAnce local 的 path-following motion target，但不会把 gripper 和 pose 合在同一个 `task.step(action)` reward/terminate 周期内。该 helper 现在带官方式 unit-quaternion/workspace 校验，并使用 RLBench `EndEffectorPoseViaPlanning` 同款 RRTConnect planner 参数。
+- server 现在默认记录 path 内部每个 `scene.step()` 的诊断视频，写入 `/home/fubin/projects/artance/cap-x/outputs/rlbench_path_videos` 下的 episode 目录；manifest 会记录 target pose、planner、success/reward、error_context 等诊断字段，host video buffer 仍只代表 cap-x trial-level frames。
+- server 不做 `/workspace/RLBench/data/RLBench-data` 到 host 本地 dataset 的 fallback；该路径映射必须由 Docker volume 或启动参数保证。
+- task class 匹配已改为优先参考 `rlbench.tasks.__init__` 导出的 registry，按 class name snake_case 建立 `task_name -> class` 映射，再 fallback 到旧的 module/class 推导。
+
+因此，当前最准确的定位是：cap-x RLBench adapter 已经适配 ArtAnce stored-demo + end-effector path 的主要闭环；对 R2C 原生 `EndEffectorPoseViaPlanning` step policy 已可通过 `/step` action mode 对齐，但 API 层 `goto_pose_xyzw()` 仍是 path helper，不应当成 pose-step 的一比一替代。
